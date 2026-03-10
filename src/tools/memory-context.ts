@@ -7,6 +7,7 @@ import { blendResults } from '../search/blend.js';
 export interface MemoryContextInput {
   task_description: string;
   limit?: number;
+  graph_depth?: number;
 }
 
 export interface ContextMemory {
@@ -30,6 +31,7 @@ export async function memoryContext(
   input: MemoryContextInput
 ): Promise<MemoryContextResult> {
   const limit = input.limit ?? 15;
+  const graphDepth = Math.min(input.graph_depth ?? 1, 3);
 
   // 1. Run FTS5 and vector search in parallel
   const [ftsResults, vecResults] = await Promise.all([
@@ -42,8 +44,8 @@ export async function memoryContext(
   ftsResults.forEach((r) => seedIds.add(r.id));
   vecResults.forEach((r) => seedIds.add(r.id));
 
-  // 3. Graph traversal from matched memories (1 level deep)
-  const graphResults = graphTraverse(db, Array.from(seedIds), 1);
+  // 3. Graph traversal from matched memories
+  const graphResults = graphTraverse(db, Array.from(seedIds), graphDepth);
 
   // 4. Blend scores: FTS5 40% + Vector 40% + Graph 20%
   const blended = blendResults(ftsResults, vecResults, graphResults, limit);

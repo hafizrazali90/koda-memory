@@ -89,6 +89,7 @@ server.tool(
   {
     task_description: z.string().describe('What you are working on'),
     limit: z.number().optional().describe('Max results (default 15)'),
+    graph_depth: z.number().min(1).max(3).optional().describe('Graph traversal depth (default 1, max 3)'),
   },
   async (params) => {
     const db = getConnection(projectPath);
@@ -129,13 +130,14 @@ server.tool(
 // memory_update - Modify an existing memory
 server.tool(
   'memory_update',
-  'Update an existing memory (content, why, tags, or confidence)',
+  'Update an existing memory (content, why, tags, confidence, or source)',
   {
     id: z.string().describe('Memory ID to update'),
     content: z.string().optional().describe('New content'),
     why: z.string().optional().describe('New rationale'),
     tags: z.array(z.string()).optional().describe('New tags (replaces existing)'),
     confidence: z.enum(['confirmed', 'inferred', 'outdated']).optional().describe('New confidence level'),
+    source: z.enum(['user-stated', 'auto-captured', 'correction']).optional().describe('How this was captured'),
   },
   async (params) => {
     try {

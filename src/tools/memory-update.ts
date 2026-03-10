@@ -7,6 +7,7 @@ export interface MemoryUpdateInput {
   why?: string;
   tags?: string[];
   confidence?: 'confirmed' | 'inferred' | 'outdated';
+  source?: 'user-stated' | 'auto-captured' | 'correction';
 }
 
 export interface MemoryUpdateResult {
@@ -44,6 +45,15 @@ export async function memoryUpdate(db: Database.Database, input: MemoryUpdateInp
         input.id
       );
       fieldsUpdated.push('confidence');
+    }
+
+    if (input.source !== undefined) {
+      db.prepare('UPDATE memories SET source = ?, updated_at = ? WHERE id = ?').run(
+        input.source,
+        now,
+        input.id
+      );
+      fieldsUpdated.push('source');
     }
 
     // Update FTS index if content or why changed
