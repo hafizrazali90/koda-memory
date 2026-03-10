@@ -25,8 +25,10 @@ export interface MemoryStoreResult {
 }
 
 function generateId(db: Database.Database): string {
-  const row = db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number };
-  const num = row.count + 1;
+  const row = db.prepare(
+    "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) as max_num FROM memories"
+  ).get() as { max_num: number | null };
+  const num = (row.max_num ?? 0) + 1;
   return `mem_${String(num).padStart(4, '0')}`;
 }
 
