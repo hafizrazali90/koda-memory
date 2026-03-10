@@ -33,7 +33,7 @@ export async function memoryContext(
 
   // 1. Run FTS5 and vector search in parallel
   const [ftsResults, vecResults] = await Promise.all([
-    Promise.resolve(ftsSearch(db, input.task_description, { limit: limit * 2 })),
+    Promise.resolve(ftsSearch(db, input.task_description, { limit: limit * 2, operator: 'OR' })),
     vectorSearch(db, input.task_description, limit * 2).catch(() => []),
   ]);
 

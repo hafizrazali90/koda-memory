@@ -8,9 +8,20 @@ export interface FtsResult {
   score: number; // BM25 score (lower = more relevant, we normalize later)
 }
 
+// Common stop words to filter out from queries
+const STOP_WORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+  'should', 'may', 'might', 'shall', 'can', 'need', 'i', 'we', 'you',
+  'he', 'she', 'it', 'they', 'this', 'that', 'these', 'those', 'am',
+  'working', 'work', 'about', 'from', 'up', 'out', 'if', 'not', 'no',
+  'so', 'what', 'which', 'who', 'when', 'where', 'how', 'all', 'each',
+]);
+
 /**
  * Full-text search using FTS5 with BM25 ranking.
- * Supports phrase queries ("exact phrase"), prefix matching (pay*), and boolean operators (OR).
+ * Supports phrase queries ("exact phrase"), prefix matching (pay*), and OR mode.
  */
 export function ftsSearch(
   db: Database.Database,
@@ -19,12 +30,14 @@ export function ftsSearch(
     category?: string;
     tags?: string[];
     limit?: number;
+    operator?: 'AND' | 'OR';
   }
 ): FtsResult[] {
   const limit = options?.limit ?? 20;
+  const operator = options?.operator ?? 'AND';
 
-  // Sanitize query for FTS5 - escape special chars, preserve phrases and prefixes
-  const ftsQuery = sanitizeFtsQuery(query);
+  // Sanitize query for FTS5
+  const ftsQuery = sanitizeFtsQuery(query, operator);
 
   if (!ftsQuery.trim()) {
     return [];
@@ -96,15 +109,15 @@ export function ftsSearch(
  * Sanitize user query for FTS5 syntax.
  * - Preserves quoted phrases: "exact match"
  * - Preserves prefix wildcards: pay*
- * - Wraps bare words so they work with FTS5
+ * - Strips stop words for better matching
+ * - Joins with AND (default) or OR
  */
-function sanitizeFtsQuery(query: string): string {
+function sanitizeFtsQuery(query: string, operator: 'AND' | 'OR' = 'AND'): string {
   // If query contains quotes, preserve phrase search
   if (query.includes('"')) {
     return query;
   }
 
-  // Split into words and join with implicit AND
   const words = query
     .split(/\s+/)
     .filter((w) => w.length > 0)
@@ -116,20 +129,37 @@ function sanitizeFtsQuery(query: string): string {
       // Remove FTS5 special characters from bare words
       return word.replace(/[{}()\[\]^~:!@#$%&]/g, '');
     })
-    .filter((w) => w.length > 0);
+    .filter((w) => w.length > 0)
+    // Strip stop words (unless it's the only word)
+    .filter((w) => !STOP_WORDS.has(w.toLowerCase().replace(/\*$/, '')));
 
-  return words.join(' ');
+  if (words.length === 0) {
+    // All words were stop words — fall back to original without filtering
+    const fallback = query
+      .split(/\s+/)
+      .filter((w) => w.length > 1)
+      .map((w) => w.replace(/[{}()\[\]^~:!@#$%&]/g, ''))
+      .filter((w) => w.length > 0);
+    return fallback.join(` ${operator} `);
+  }
+
+  return words.join(operator === 'OR' ? ' OR ' : ' ');
 }
 
 /**
- * Fallback search: wrap each word as a prefix match.
+ * Fallback search: wrap each word as a prefix match with OR.
  */
 function simpleFtsSearch(db: Database.Database, query: string, limit: number): FtsResult[] {
   const words = query.split(/\s+/).filter((w) => w.length > 1);
   if (words.length === 0) return [];
 
-  // Use OR between prefix-matched words for a lenient fallback
-  const ftsQuery = words.map((w) => `${w.replace(/[^a-zA-Z0-9]/g, '')}*`).join(' OR ');
+  const ftsQuery = words
+    .filter((w) => !STOP_WORDS.has(w.toLowerCase()))
+    .map((w) => `${w.replace(/[^a-zA-Z0-9]/g, '')}*`)
+    .filter((w) => w.length > 1)
+    .join(' OR ');
+
+  if (!ftsQuery) return [];
 
   try {
     return db

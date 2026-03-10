@@ -16,16 +16,20 @@ export interface MemoryEntry {
 }
 
 export function memoryRecall(db: Database.Database, id: string): MemoryEntry | null {
-  const memory = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as any;
-
-  if (!memory) {
+  // Check existence first
+  const exists = db.prepare('SELECT id FROM memories WHERE id = ?').get(id);
+  if (!exists) {
     return null;
   }
 
-  // Update access tracking
-  db.prepare(`
-    UPDATE memories SET last_accessed = ?, access_count = access_count + 1 WHERE id = ?
-  `).run(new Date().toISOString(), id);
+  // Update access tracking first so we return the current count
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE memories SET last_accessed = ?, access_count = access_count + 1 WHERE id = ?'
+  ).run(now, id);
+
+  // Read the updated memory
+  const memory = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as any;
 
   // Get tags
   const tags = db.prepare('SELECT tag FROM tags WHERE memory_id = ?').all(id) as { tag: string }[];

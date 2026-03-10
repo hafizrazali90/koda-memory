@@ -28,7 +28,9 @@ function generateSessionId(): string {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
   const timeStr = now.toISOString().slice(11, 19).replace(/:/g, '');
-  return `ses_${dateStr}_${timeStr}`;
+  const ms = String(now.getMilliseconds()).padStart(3, '0');
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `ses_${dateStr}_${timeStr}_${ms}${rand}`;
 }
 
 export function sessionStart(db: Database.Database, project: string): SessionStartResult {
