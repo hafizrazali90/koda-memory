@@ -28,10 +28,19 @@ function resolveProject(paramProject?: string): string {
 
 function authenticate(req: IncomingMessage): boolean {
   if (!KODA_API_KEY) return true; // No key = no auth (dev mode)
+
+  // Check Authorization header first
   const auth = req.headers['authorization'];
-  if (!auth) return false;
-  const [scheme, token] = auth.split(' ');
-  return scheme === 'Bearer' && token === KODA_API_KEY;
+  if (auth) {
+    const [scheme, token] = auth.split(' ');
+    if (scheme === 'Bearer' && token === KODA_API_KEY) return true;
+  }
+
+  // Fall back to query string ?apiKey=xxx (for clients that don't support headers)
+  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  if (url.searchParams.get('apiKey') === KODA_API_KEY) return true;
+
+  return false;
 }
 
 // --- MCP Server factory ---
