@@ -2,6 +2,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
 import { getConnection, closeConnection } from './db/connection.js';
 import { memoryStore } from './tools/memory-store.js';
@@ -311,7 +312,11 @@ function createMcpServer(): McpServer {
 
 // --- HTTP Server ---
 
-const transports = new Map<string, StreamableHTTPServerTransport>();
+// Streamable HTTP sessions
+const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
+
+// SSE sessions (legacy — used by Claude Code "type": "sse")
+const sseTransports = new Map<string, SSEServerTransport>();
 
 async function main() {
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -331,65 +336,89 @@ async function main() {
       return;
     }
 
-    // Only handle /mcp path
-    if (url.pathname !== '/mcp') {
-      res.writeHead(404);
-      res.end('Not Found');
+    // === SSE Transport (legacy) ===
+    // GET /sse — establish SSE stream
+    if (url.pathname === '/sse' && req.method === 'GET') {
+      const transport = new SSEServerTransport('/messages', res);
+      const mcpServer = createMcpServer();
+
+      transport.onclose = () => {
+        sseTransports.delete(transport.sessionId);
+      };
+
+      await mcpServer.connect(transport);
+      sseTransports.set(transport.sessionId, transport);
       return;
     }
 
-    // Handle session-based routing
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-    if (req.method === 'GET' || req.method === 'DELETE') {
-      if (sessionId && transports.has(sessionId)) {
-        const transport = transports.get(sessionId)!;
-        await transport.handleRequest(req, res);
-      } else if (req.method === 'GET') {
+    // POST /messages — SSE message endpoint
+    if (url.pathname === '/messages' && req.method === 'POST') {
+      const sessionId = url.searchParams.get('sessionId');
+      if (!sessionId || !sseTransports.has(sessionId)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing or invalid session ID' }));
-      } else {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Session not found' }));
-      }
-      return;
-    }
-
-    if (req.method === 'POST') {
-      // Existing session
-      if (sessionId && transports.has(sessionId)) {
-        const transport = transports.get(sessionId)!;
-        await transport.handleRequest(req, res);
+        res.end(JSON.stringify({ error: 'Invalid or missing session ID' }));
         return;
       }
 
-      // New session — create transport and connect a fresh MCP server
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-      });
-
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          transports.delete(transport.sessionId);
-        }
-      };
-
-      const mcpServer = createMcpServer();
-      await mcpServer.connect(transport);
-      await transport.handleRequest(req, res);
-
-      if (transport.sessionId) {
-        transports.set(transport.sessionId, transport);
-      }
+      const transport = sseTransports.get(sessionId)!;
+      await transport.handlePostMessage(req, res);
       return;
     }
 
-    res.writeHead(405);
-    res.end('Method Not Allowed');
+    // === Streamable HTTP Transport (modern) ===
+    if (url.pathname === '/mcp') {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      if (req.method === 'GET' || req.method === 'DELETE') {
+        if (sessionId && streamableTransports.has(sessionId)) {
+          const transport = streamableTransports.get(sessionId)!;
+          await transport.handleRequest(req, res);
+        } else if (req.method === 'GET') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing or invalid session ID' }));
+        } else {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Session not found' }));
+        }
+        return;
+      }
+
+      if (req.method === 'POST') {
+        if (sessionId && streamableTransports.has(sessionId)) {
+          const transport = streamableTransports.get(sessionId)!;
+          await transport.handleRequest(req, res);
+          return;
+        }
+
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+        });
+
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            streamableTransports.delete(transport.sessionId);
+          }
+        };
+
+        const mcpServer = createMcpServer();
+        await mcpServer.connect(transport);
+        await transport.handleRequest(req, res);
+
+        if (transport.sessionId) {
+          streamableTransports.set(transport.sessionId, transport);
+        }
+        return;
+      }
+    }
+
+    res.writeHead(404);
+    res.end('Not Found');
   });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Koda Memory server listening on http://0.0.0.0:${PORT}`);
+    console.log(`SSE endpoint: GET /sse + POST /messages`);
+    console.log(`Streamable HTTP endpoint: POST /mcp`);
     console.log(`Auth: ${KODA_API_KEY ? 'enabled' : 'DISABLED (no KODA_API_KEY set)'}`);
     console.log(`DB: ${process.env.KODA_DB_PATH || '(default: .koda/brain.db)'}`);
   });
