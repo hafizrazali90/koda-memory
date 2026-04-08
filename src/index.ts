@@ -339,7 +339,8 @@ async function main() {
     // === SSE Transport (legacy) ===
     // GET /sse — establish SSE stream
     if (url.pathname === '/sse' && req.method === 'GET') {
-      const transport = new SSEServerTransport('/messages', res);
+      const messagesPath = process.env.KODA_BASE_PATH ? `${process.env.KODA_BASE_PATH}/messages` : '/messages';
+      const transport = new SSEServerTransport(messagesPath, res);
       const mcpServer = createMcpServer();
 
       transport.onclose = () => {
