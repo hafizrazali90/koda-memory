@@ -9,19 +9,15 @@ const __dirname = path.dirname(__filename);
 
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 
-export interface ConnectionOptions {
-  projectPath: string;
+export function getDbPath(): string {
+  return process.env.KODA_DB_PATH || path.join(process.cwd(), '.koda', 'brain.db');
 }
 
-export function getDbPath(projectPath: string): string {
-  return path.join(projectPath, '.koda', 'brain.db');
-}
+export function openDatabase(): Database.Database {
+  const dbPath = getDbPath();
+  const dbDir = path.dirname(dbPath);
 
-export function openDatabase(options: ConnectionOptions): Database.Database {
-  const dbDir = path.join(options.projectPath, '.koda');
-  const dbPath = path.join(dbDir, 'brain.db');
-
-  // Ensure .koda directory exists
+  // Ensure directory exists
   if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
   }
@@ -79,40 +75,26 @@ function createVectorTable(db: Database.Database): void {
   `);
 }
 
-// Singleton pattern for reusing connections within the same project
-const connections = new Map<string, Database.Database>();
+// Singleton connection
+let connection: Database.Database | null = null;
 
-export function getConnection(projectPath: string): Database.Database {
-  const resolved = path.resolve(projectPath);
-
-  let db = connections.get(resolved);
-  if (db) {
-    // Verify connection is still open
+export function getConnection(): Database.Database {
+  if (connection) {
     try {
-      db.prepare('SELECT 1').get();
-      return db;
+      connection.prepare('SELECT 1').get();
+      return connection;
     } catch {
-      connections.delete(resolved);
+      connection = null;
     }
   }
 
-  db = openDatabase({ projectPath: resolved });
-  connections.set(resolved, db);
-  return db;
+  connection = openDatabase();
+  return connection;
 }
 
-export function closeConnection(projectPath: string): void {
-  const resolved = path.resolve(projectPath);
-  const db = connections.get(resolved);
-  if (db) {
-    db.close();
-    connections.delete(resolved);
-  }
-}
-
-export function closeAllConnections(): void {
-  for (const [key, db] of connections) {
-    db.close();
-    connections.delete(key);
+export function closeConnection(): void {
+  if (connection) {
+    connection.close();
+    connection = null;
   }
 }

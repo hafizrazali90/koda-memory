@@ -1,21 +1,13 @@
-import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type Database from 'better-sqlite3';
+import { getDbPath } from '../db/connection.js';
 
 export interface HealthReport {
-  project_path: string;
-  git: {
-    is_repo: boolean;
-    branch?: string;
-    uncommitted_changes?: number;
-    untracked_files?: number;
-  };
   memory: {
     total_memories: number;
     by_category: Record<string, number>;
     by_confidence: Record<string, number>;
-    stale_count: number; // Not accessed in 60+ days
+    stale_count: number;
     total_sessions: number;
     total_relationships: number;
   };
@@ -26,10 +18,8 @@ export interface HealthReport {
   };
 }
 
-export function projectHealth(db: Database.Database, projectPath: string): HealthReport {
+export function projectHealth(db: Database.Database): HealthReport {
   const report: HealthReport = {
-    project_path: projectPath,
-    git: { is_repo: false },
     memory: {
       total_memories: 0,
       by_category: {},
@@ -44,23 +34,6 @@ export function projectHealth(db: Database.Database, projectPath: string): Healt
       db_path: '',
     },
   };
-
-  // Git status
-  try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: projectPath, stdio: 'pipe' });
-    report.git.is_repo = true;
-
-    report.git.branch = execSync('git branch --show-current', { cwd: projectPath, stdio: 'pipe' })
-      .toString()
-      .trim();
-
-    const status = execSync('git status --porcelain', { cwd: projectPath, stdio: 'pipe' }).toString().trim();
-    const lines = status ? status.split('\n') : [];
-    report.git.uncommitted_changes = lines.filter((l) => !l.startsWith('??')).length;
-    report.git.untracked_files = lines.filter((l) => l.startsWith('??')).length;
-  } catch {
-    // Not a git repo
-  }
 
   // Memory stats
   const totalMemories = db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number };
@@ -96,7 +69,7 @@ export function projectHealth(db: Database.Database, projectPath: string): Healt
   report.memory.total_relationships = relCount.count;
 
   // DB file size
-  const dbPath = path.join(projectPath, '.koda', 'brain.db');
+  const dbPath = getDbPath();
   report.environment.db_path = dbPath;
   try {
     const stats = fs.statSync(dbPath);
