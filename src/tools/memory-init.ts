@@ -44,7 +44,7 @@ export async function memoryInit(db: Database.Database, projectPath: string): Pr
 
   for (const memory of scan.memories) {
     try {
-      const result = await memoryStore(db, project, {
+      const result = await memoryStore(db, project, 'hafiz', {
         content: memory.content,
         category: memory.category,
         why: memory.why,

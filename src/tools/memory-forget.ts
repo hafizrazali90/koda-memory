@@ -5,15 +5,16 @@ export interface MemoryForgetResult {
   message: string;
 }
 
-export function memoryForget(db: Database.Database, id: string): MemoryForgetResult {
-  // Verify memory exists
-  const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(id);
+export function memoryForget(db: Database.Database, userId: string, id: string): MemoryForgetResult {
+  // Verify memory exists AND belongs to this user (shared memories cannot be deleted by staff)
+  const existing = db.prepare(
+    'SELECT id FROM memories WHERE id = ? AND user_id = ?'
+  ).get(id, userId);
   if (!existing) {
-    throw new Error(`Memory ${id} not found`);
+    throw new Error(`Memory ${id} not found or not owned by user '${userId}'`);
   }
 
   db.transaction(() => {
-    // Delete from all tables (cascade via foreign keys, but be explicit)
     db.prepare('DELETE FROM memory_embeddings WHERE memory_id = ?').run(id);
     db.prepare('DELETE FROM memories_fts WHERE id = ?').run(id);
     db.prepare('DELETE FROM tags WHERE memory_id = ?').run(id);

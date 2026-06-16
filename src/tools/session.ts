@@ -33,44 +33,39 @@ function generateSessionId(): string {
   return `ses_${dateStr}_${timeStr}_${ms}${rand}`;
 }
 
-export function sessionStart(db: Database.Database, project: string): SessionStartResult {
+export function sessionStart(
+  db: Database.Database,
+  project: string,
+  userId: string
+): SessionStartResult {
   const sessionId = generateSessionId();
   const now = new Date().toISOString();
 
-  // Create session record
   db.prepare(`
-    INSERT INTO sessions (id, project, started_at)
-    VALUES (?, ?, ?)
-  `).run(sessionId, project, now);
+    INSERT INTO sessions (id, project, user_id, started_at)
+    VALUES (?, ?, ?, ?)
+  `).run(sessionId, project, userId, now);
 
-  // Get last 3 sessions
-  const recentSessions = db
-    .prepare(
-      `SELECT id, started_at, summary, branch FROM sessions
-       WHERE project = ? AND id != ?
-       ORDER BY started_at DESC
-       LIMIT 3`
-    )
-    .all(project, sessionId) as SessionStartResult['recent_sessions'];
+  // Recent sessions for this user + project
+  const recentSessions = db.prepare(
+    `SELECT id, started_at, summary, branch FROM sessions
+     WHERE project = ? AND user_id = ? AND id != ?
+     ORDER BY started_at DESC LIMIT 3`
+  ).all(project, userId, sessionId) as SessionStartResult['recent_sessions'];
 
-  // Get most-accessed memories (most important knowledge)
-  const topMemories = db
-    .prepare(
-      `SELECT id, content, access_count FROM memories
-       WHERE project = ? AND access_count > 0
-       ORDER BY access_count DESC
-       LIMIT 5`
-    )
-    .all(project) as SessionStartResult['top_memories'];
+  // Most-accessed memories for this user (+ shared)
+  const topMemories = db.prepare(
+    `SELECT id, content, access_count FROM memories
+     WHERE project = ? AND (user_id = ? OR user_id = ?) AND access_count > 0
+     ORDER BY access_count DESC LIMIT 5`
+  ).all(project, userId, 'shared') as SessionStartResult['top_memories'];
 
-  // Get outdated memories that need attention
-  const outdatedMemories = db
-    .prepare(
-      `SELECT id, content FROM memories
-       WHERE project = ? AND confidence = 'outdated'
-       LIMIT 5`
-    )
-    .all(project) as SessionStartResult['outdated_memories'];
+  // Outdated memories for this user
+  const outdatedMemories = db.prepare(
+    `SELECT id, content FROM memories
+     WHERE project = ? AND user_id = ? AND confidence = 'outdated'
+     LIMIT 5`
+  ).all(project, userId) as SessionStartResult['outdated_memories'];
 
   return {
     session_id: sessionId,
@@ -90,9 +85,7 @@ export function sessionEnd(
   const now = new Date().toISOString();
 
   const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId);
-  if (!existing) {
-    throw new Error(`Session ${sessionId} not found`);
-  }
+  if (!existing) throw new Error(`Session ${sessionId} not found`);
 
   db.prepare(`
     UPDATE sessions SET ended_at = ?, summary = ?, branch = ?, commit_count = ?
@@ -105,16 +98,23 @@ export function sessionEnd(
   };
 }
 
-export function sessionList(db: Database.Database, project: string, limit: number = 10): SessionListResult {
-  const sessions = db
-    .prepare(
-      `SELECT id, project, started_at, ended_at, summary, branch, commit_count
-       FROM sessions
-       WHERE project = ?
-       ORDER BY started_at DESC
-       LIMIT ?`
-    )
-    .all(project, limit) as SessionListResult['sessions'];
+export function sessionList(
+  db: Database.Database,
+  project: string,
+  limit: number = 10,
+  userId?: string
+): SessionListResult {
+  const sessions = userId
+    ? db.prepare(
+        `SELECT id, project, started_at, ended_at, summary, branch, commit_count
+         FROM sessions WHERE project = ? AND user_id = ?
+         ORDER BY started_at DESC LIMIT ?`
+      ).all(project, userId, limit)
+    : db.prepare(
+        `SELECT id, project, started_at, ended_at, summary, branch, commit_count
+         FROM sessions WHERE project = ?
+         ORDER BY started_at DESC LIMIT ?`
+      ).all(project, limit);
 
-  return { sessions };
+  return { sessions: sessions as SessionListResult['sessions'] };
 }

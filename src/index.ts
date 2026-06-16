@@ -18,34 +18,71 @@ import { projectHealth, archiveStaleMemories } from './tools/health.js';
 // --- Config ---
 
 const PORT = parseInt(process.env.PORT || '3848', 10);
-const KODA_API_KEY = process.env.KODA_API_KEY;
+const KODA_API_KEY = process.env.KODA_API_KEY; // Legacy single-key (maps to KODA_DEFAULT_USER)
 
 function resolveProject(paramProject?: string): string {
   return paramProject || process.env.KODA_DEFAULT_PROJECT || 'default';
 }
 
-// --- Auth ---
+// --- Per-user API key resolution ---
+//
+// Option A — single key (legacy, backward-compatible):
+//   KODA_API_KEY=xxx  → user_id = KODA_DEFAULT_USER (default: "hafiz")
+//
+// Option B — per-user keys:
+//   KODA_USERS=hafiz:key_abc,ali:key_def,sara:key_ghi
+//   Memories are isolated per user_id.
+//   user_id "shared" is readable by ALL users (curated team knowledge).
 
-function authenticate(req: IncomingMessage): boolean {
-  if (!KODA_API_KEY) return true; // No key = no auth (dev mode)
+function buildUserMap(): Map<string, string> {
+  const map = new Map<string, string>();
 
-  // Check Authorization header first
-  const auth = req.headers['authorization'];
-  if (auth) {
-    const [scheme, token] = auth.split(' ');
-    if (scheme === 'Bearer' && token === KODA_API_KEY) return true;
+  if (KODA_API_KEY) {
+    const defaultUser = process.env.KODA_DEFAULT_USER || 'hafiz';
+    map.set(KODA_API_KEY, defaultUser);
   }
 
-  // Fall back to query string ?apiKey=xxx (for clients that don't support headers)
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
-  if (url.searchParams.get('apiKey') === KODA_API_KEY) return true;
+  const usersEnv = process.env.KODA_USERS;
+  if (usersEnv) {
+    for (const pair of usersEnv.split(',')) {
+      const colonIdx = pair.indexOf(':');
+      if (colonIdx === -1) continue;
+      const userId = pair.slice(0, colonIdx).trim();
+      const key = pair.slice(colonIdx + 1).trim();
+      if (userId && key) map.set(key, userId);
+    }
+  }
 
-  return false;
+  return map;
+}
+
+const USER_MAP = buildUserMap();
+
+function resolveUser(req: IncomingMessage): string | null {
+  if (USER_MAP.size === 0) return 'hafiz'; // dev mode — no auth
+
+  let token: string | null = null;
+
+  const auth = req.headers['authorization'];
+  if (auth) {
+    const spaceIdx = auth.indexOf(' ');
+    if (spaceIdx !== -1 && auth.slice(0, spaceIdx) === 'Bearer') {
+      token = auth.slice(spaceIdx + 1);
+    }
+  }
+
+  if (!token) {
+    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    token = url.searchParams.get('apiKey');
+  }
+
+  if (!token) return null;
+  return USER_MAP.get(token) ?? null;
 }
 
 // --- MCP Server factory ---
 
-function createMcpServer(): McpServer {
+function createMcpServer(userId: string): McpServer {
   const server = new McpServer({
     name: 'koda-memory',
     version: '0.1.0',
@@ -66,7 +103,7 @@ function createMcpServer(): McpServer {
     async (params) => {
       const db = getConnection();
       const project = resolveProject(params.project);
-      const result = await memoryStore(db, project, params);
+      const result = await memoryStore(db, project, userId, params);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -107,7 +144,7 @@ function createMcpServer(): McpServer {
     },
     async (params) => {
       const db = getConnection();
-      const results = await memorySearch(db, params);
+      const results = await memorySearch(db, userId, params);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(results, null, 2) }],
       };
@@ -125,7 +162,7 @@ function createMcpServer(): McpServer {
     },
     async (params) => {
       const db = getConnection();
-      const result = await memoryContext(db, params);
+      const result = await memoryContext(db, userId, params);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -174,7 +211,7 @@ function createMcpServer(): McpServer {
     async (params) => {
       try {
         const db = getConnection();
-        const result = await memoryUpdate(db, params);
+        const result = await memoryUpdate(db, userId, params);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };
@@ -197,7 +234,7 @@ function createMcpServer(): McpServer {
     async (params) => {
       try {
         const db = getConnection();
-        const result = memoryForget(db, params.id);
+        const result = memoryForget(db, userId, params.id);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };
@@ -238,7 +275,7 @@ function createMcpServer(): McpServer {
     async (params) => {
       const db = getConnection();
       const project = resolveProject(params.project);
-      const result = sessionStart(db, project);
+      const result = sessionStart(db, project, userId);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -338,8 +375,9 @@ async function main() {
       return;
     }
 
-    // All other routes require auth
-    if (!authenticate(req)) {
+    // All other routes require auth — resolveUser returns null on bad/missing token
+    const userId = resolveUser(req);
+    if (!userId) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
       return;
@@ -350,7 +388,7 @@ async function main() {
     if (url.pathname === '/sse' && req.method === 'GET') {
       const messagesPath = process.env.KODA_BASE_PATH ? `${process.env.KODA_BASE_PATH}/messages` : '/messages';
       const transport = new SSEServerTransport(messagesPath, res);
-      const mcpServer = createMcpServer();
+      const mcpServer = createMcpServer(userId);
 
       transport.onclose = () => {
         sseTransports.delete(transport.sessionId);
@@ -410,7 +448,7 @@ async function main() {
           }
         };
 
-        const mcpServer = createMcpServer();
+        const mcpServer = createMcpServer(userId);
         await mcpServer.connect(transport);
         await transport.handleRequest(req, res);
 
