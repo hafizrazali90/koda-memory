@@ -47,13 +47,44 @@ function initializeSchema(db: Database.Database): void {
     "SELECT name FROM sqlite_master WHERE type='table' AND name='memories'"
   ).get();
 
-  if (tableExists) {
-    return;
+  if (!tableExists) {
+    // Fresh database — run full schema
+    const schemaSql = fs.readFileSync(SCHEMA_PATH, 'utf-8');
+    db.exec(schemaSql);
   }
 
-  // Read and execute schema SQL
-  const schemaSql = fs.readFileSync(SCHEMA_PATH, 'utf-8');
-  db.exec(schemaSql);
+  // Run incremental migrations on every startup (idempotent)
+  runMigrations(db);
+}
+
+function runMigrations(db: Database.Database): void {
+  // Migration 2 — per-user isolation
+  // Add user_id to memories (default 'hafiz' preserves all existing memories as yours)
+  const hasUserIdOnMemories = db.prepare(
+    "SELECT 1 FROM pragma_table_info('memories') WHERE name='user_id'"
+  ).get();
+  if (!hasUserIdOnMemories) {
+    db.exec(`
+      ALTER TABLE memories ADD COLUMN user_id TEXT NOT NULL DEFAULT 'hafiz';
+      CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+    `);
+  }
+
+  // Add user_id to sessions
+  const hasUserIdOnSessions = db.prepare(
+    "SELECT 1 FROM pragma_table_info('sessions') WHERE name='user_id'"
+  ).get();
+  if (!hasUserIdOnSessions) {
+    db.exec(`
+      ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'hafiz';
+      CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+    `);
+  }
+
+  // Record migration
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (2, datetime('now'))"
+  ).run();
 }
 
 function createVectorTable(db: Database.Database): void {
