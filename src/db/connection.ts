@@ -13,8 +13,8 @@ export function getDbPath(): string {
   return process.env.KODA_DB_PATH || path.join(process.cwd(), '.koda', 'brain.db');
 }
 
-export function openDatabase(): Database.Database {
-  const dbPath = getDbPath();
+export function openDatabase(options?: { dbPath?: string }): Database.Database {
+  const dbPath = options?.dbPath || getDbPath();
   const dbDir = path.dirname(dbPath);
 
   // Ensure directory exists
