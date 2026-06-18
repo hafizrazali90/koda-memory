@@ -12,6 +12,7 @@ import { memoryRelate } from './tools/memory-relate.js';
 import { memoryContext } from './tools/memory-context.js';
 import { memoryUpdate } from './tools/memory-update.js';
 import { memoryForget } from './tools/memory-forget.js';
+import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
 
@@ -99,11 +100,17 @@ function createMcpServer(userId: string): McpServer {
       tags: z.array(z.string()).optional().describe('Tags for filtering'),
       source: z.enum(['user-stated', 'auto-captured', 'correction']).optional().describe('How this was captured'),
       project: z.string().optional().describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
+      scope: z.enum(['personal', 'project']).optional().describe(
+        'personal (default) = only you can see it; project = visible to all Sifututor team members'
+      ),
     },
     async (params) => {
       const db = getConnection();
       const project = resolveProject(params.project);
-      const result = await memoryStore(db, project, userId, params);
+      // When scope=project, store under the shared 'sifututor' namespace so all devs can read it
+      const effectiveUserId = params.scope === 'project' ? 'sifututor' : userId;
+      // created_by always records the real author, even for project-scoped writes
+      const result = await memoryStore(db, project, effectiveUserId, params, userId);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -235,6 +242,31 @@ function createMcpServer(userId: string): McpServer {
       try {
         const db = getConnection();
         const result = memoryForget(db, userId, params.id);
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (error: any) {
+        return {
+          content: [{ type: 'text' as const, text: error.message }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // memory_flag
+  server.tool(
+    'memory_flag',
+    'Flag a shared/project memory as potentially outdated for human review (or clear a flag). Does not delete or change confidence. Any team member can flag any memory they can see.',
+    {
+      id: z.string().describe('Memory ID to flag'),
+      reason: z.string().optional().describe('Why it looks outdated'),
+      clear: z.boolean().optional().describe('Set true to remove an existing flag'),
+    },
+    async (params) => {
+      try {
+        const db = getConnection();
+        const result = memoryFlag(db, userId, params);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };

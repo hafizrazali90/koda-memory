@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { storeEmbedding, vectorSearchByEmbedding } from '../search/vector.js';
 import { generateEmbedding, isEmbeddingAvailable } from '../embeddings/openai.js';
 import { processMemory, isProcessorAvailable } from '../llm/processor.js';
@@ -26,12 +27,10 @@ export interface MemoryStoreResult {
   similar_existing?: SimilarMemory[];
 }
 
-function generateId(db: Database.Database): string {
-  const row = db.prepare(
-    "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) as max_num FROM memories"
-  ).get() as { max_num: number | null };
-  const num = (row.max_num ?? 0) + 1;
-  return `mem_${String(num).padStart(4, '0')}`;
+// Random UUID-based IDs — no MAX-then-increment race under concurrent writes.
+// 12 hex chars = 48 bits of entropy; collision is negligible at any realistic scale.
+function generateId(): string {
+  return `mem_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
 
 const SIMILARITY_THRESHOLD = 0.92;
@@ -40,7 +39,8 @@ export async function memoryStore(
   db: Database.Database,
   project: string,
   userId: string,
-  input: MemoryStoreInput
+  input: MemoryStoreInput,
+  createdBy?: string
 ): Promise<MemoryStoreResult> {
   // Step 1 — vector similarity check (find potential duplicates)
   let similar: SimilarMemory[] = [];
@@ -113,19 +113,20 @@ export async function memoryStore(
   }
 
   // Step 3 — persist to SQLite
-  const id = generateId(db);
+  const id = generateId();
   const now = new Date().toISOString();
 
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO memories (id, project, user_id, category, content, why, source, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (id, project, user_id, category, content, why, source, created_at, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, project, userId,
       finalInput.category, finalInput.content,
       finalInput.why ?? null,
       finalInput.source ?? 'auto-captured',
-      now
+      now,
+      createdBy ?? userId
     );
 
     const tagsText = finalInput.tags?.join(' ') ?? '';

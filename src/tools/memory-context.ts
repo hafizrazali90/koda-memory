@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { ftsSearch } from '../search/fts.js';
 import { vectorSearch } from '../search/vector.js';
 import { graphTraverse } from '../search/graph.js';
-import { blendResults } from '../search/blend.js';
+import { blendResults, type MemoryMeta } from '../search/blend.js';
 
 export interface MemoryContextInput {
   task_description: string;
@@ -35,8 +35,8 @@ export async function memoryContext(
   const graphDepth = Math.min(input.graph_depth ?? 1, 3);
 
   const [ftsResults, vecResults] = await Promise.all([
-    Promise.resolve(ftsSearch(db, input.task_description, { limit: limit * 2, operator: 'OR' })),
-    vectorSearch(db, input.task_description, limit * 2).catch(() => []),
+    Promise.resolve(ftsSearch(db, input.task_description, { limit: limit * 2, operator: 'OR', userId })),
+    vectorSearch(db, input.task_description, limit * 2, userId).catch(() => []),
   ]);
 
   const seedIds = new Set<string>();
@@ -44,15 +44,29 @@ export async function memoryContext(
   vecResults.forEach((r) => seedIds.add(r.id));
 
   const graphResults = graphTraverse(db, Array.from(seedIds), graphDepth);
-  const blended = blendResults(ftsResults, vecResults, graphResults, limit);
+
+  // Collect metadata (recency + signal weighting)
+  const allIds = Array.from(seedIds);
+  const metaMap = new Map<string, MemoryMeta>();
+  if (allIds.length > 0) {
+    const placeholders = allIds.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT id, created_at, access_count, confidence FROM memories WHERE id IN (${placeholders})`
+    ).all(...allIds) as { id: string; created_at: string; access_count: number; confidence: string }[];
+    for (const row of rows) {
+      metaMap.set(row.id, { created_at: row.created_at, access_count: row.access_count, confidence: row.confidence });
+    }
+  }
+
+  const blended = blendResults(ftsResults, vecResults, graphResults, limit, metaMap);
 
   const memories: ContextMemory[] = [];
 
   for (const result of blended) {
-    // Only show memories belonging to this user or shared team memories
+    // Show this user's personal memories + shared team memories + sifututor project memories
     const memory = db.prepare(
-      'SELECT * FROM memories WHERE id = ? AND (user_id = ? OR user_id = ?)'
-    ).get(result.id, userId, 'shared') as any;
+      'SELECT * FROM memories WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = ?)'
+    ).get(result.id, userId, 'shared', 'sifututor') as any;
     if (!memory) continue;
 
     const tags = db.prepare('SELECT tag FROM tags WHERE memory_id = ?').all(result.id) as { tag: string }[];
