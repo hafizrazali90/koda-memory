@@ -6,6 +6,7 @@ import * as os from 'node:os';
 
 describe('Database Connection', () => {
   const testDir = path.join(os.tmpdir(), `koda-test-${Date.now()}`);
+  const dbPath = path.join(testDir, 'brain.db');
   let db: ReturnType<typeof openDatabase>;
 
   afterAll(() => {
@@ -13,8 +14,8 @@ describe('Database Connection', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('creates .koda/brain.db with all tables', () => {
-    db = openDatabase({ projectPath: testDir });
+  it('creates brain.db with all tables', () => {
+    db = openDatabase({ dbPath });
 
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -57,9 +58,20 @@ describe('Database Connection', () => {
     expect(fk).toBe(1);
   });
 
-  it('schema version is 1', () => {
-    const row = db.prepare('SELECT version FROM schema_version').get() as { version: number };
-    expect(row.version).toBe(1);
+  it('runs all migrations (schema version 5)', () => {
+    const row = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number };
+    expect(row.version).toBe(5);
+  });
+
+  it('memories table has all migrated columns', () => {
+    const cols = db
+      .prepare("SELECT name FROM pragma_table_info('memories')")
+      .all() as { name: string }[];
+    const names = cols.map((c) => c.name);
+    // migration 2–5 columns
+    for (const col of ['user_id', 'human_reviewed_at', 'created_by', 'flagged_outdated_by', 'flagged_outdated_at', 'superseded_at']) {
+      expect(names).toContain(col);
+    }
   });
 
   it('can insert and query a memory', () => {
