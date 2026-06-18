@@ -12,20 +12,41 @@ export interface BlendedResult {
   };
 }
 
-// Blending weights: FTS5 40% + Vector 40% + Graph 20%
-const WEIGHT_FTS = 0.4;
-const WEIGHT_VECTOR = 0.4;
-const WEIGHT_GRAPH = 0.2;
+// Blending weights: FTS 36% + Vector 36% + Graph 18% + Recency 10%
+const WEIGHT_FTS = 0.36;
+const WEIGHT_VECTOR = 0.36;
+const WEIGHT_GRAPH = 0.18;
+const WEIGHT_RECENCY = 0.10;
+
+// Signal boost: reward memories that have proven useful or been human-confirmed
+const BOOST_FREQUENT = 0.05; // access_count > 5
+const BOOST_CONFIRMED = 0.05; // confidence === 'confirmed'
+
+// Per-memory metadata used for recency + signal weighting
+export interface MemoryMeta {
+  created_at?: string;
+  access_count?: number;
+  confidence?: string;
+}
+
+// Half-life ~1 year: a memory from today = 1.0, from 1 year ago = ~0.37
+function recencyScore(createdAt: string | undefined): number {
+  if (!createdAt) return 0.5; // neutral if unknown
+  const ageDays = (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24);
+  return Math.exp(-ageDays / 365);
+}
 
 /**
  * Blend results from FTS5, vector, and graph search into a single ranked list.
  * Normalizes scores to 0-1 range, applies weights, deduplicates.
+ * Pass metaMap (id → MemoryMeta) to enable recency weighting + signal boosts.
  */
 export function blendResults(
   ftsResults: FtsResult[],
   vectorResults: VectorResult[],
   graphResults: GraphResult[],
-  limit: number = 15
+  limit: number = 15,
+  metaMap?: Map<string, MemoryMeta>
 ): BlendedResult[] {
   const scoreMap = new Map<string, BlendedResult>();
 
@@ -49,6 +70,18 @@ export function blendResults(
     const entry = getOrCreate(scoreMap, graph.id);
     entry.sources.graph = graph.score;
     entry.score += graph.score * WEIGHT_GRAPH;
+  }
+
+  // Apply recency weighting + signal boosts if metadata was provided
+  if (metaMap && metaMap.size > 0) {
+    for (const entry of scoreMap.values()) {
+      const meta = metaMap.get(entry.id);
+      entry.score += recencyScore(meta?.created_at) * WEIGHT_RECENCY;
+      const boost =
+        ((meta?.access_count ?? 0) > 5 ? BOOST_FREQUENT : 0) +
+        (meta?.confidence === 'confirmed' ? BOOST_CONFIRMED : 0);
+      entry.score = Math.min(1.0, entry.score + boost);
+    }
   }
 
   // Sort by blended score (descending) and return top N

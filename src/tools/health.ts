@@ -82,8 +82,12 @@ export function projectHealth(db: Database.Database): HealthReport {
 }
 
 /**
- * Auto-archive memories not accessed in 60+ days.
- * Marks them as 'outdated' confidence instead of deleting.
+ * Auto-archive stale memories by marking them 'outdated' (never deletes).
+ *
+ * Staleness is measured against the most recent human touch — COALESCE(human_reviewed_at,
+ * last_accessed) — so a memory a person confirmed recently survives even if it hasn't
+ * surfaced in a search. Human-confirmed memories are exempt entirely: a deliberate
+ * 'confirmed' verdict should not be undone by passive staleness.
  */
 export function archiveStaleMemories(db: Database.Database): { archived: number } {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
@@ -91,9 +95,9 @@ export function archiveStaleMemories(db: Database.Database): { archived: number 
   const result = db
     .prepare(
       `UPDATE memories SET confidence = 'outdated', updated_at = ?
-       WHERE confidence != 'outdated'
-         AND last_accessed IS NOT NULL
-         AND last_accessed < ?`
+       WHERE confidence NOT IN ('outdated', 'confirmed')
+         AND COALESCE(human_reviewed_at, last_accessed) IS NOT NULL
+         AND COALESCE(human_reviewed_at, last_accessed) < ?`
     )
     .run(new Date().toISOString(), sixtyDaysAgo);
 

@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at TEXT NOT NULL,
   updated_at TEXT,
   last_accessed TEXT,
-  access_count INTEGER DEFAULT 0
+  access_count INTEGER DEFAULT 0,
+  human_reviewed_at TEXT
 );
 
 -- Full-text search index (standalone FTS5 with Porter stemmer)

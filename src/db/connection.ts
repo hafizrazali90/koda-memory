@@ -85,6 +85,19 @@ function runMigrations(db: Database.Database): void {
   db.prepare(
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (2, datetime('now'))"
   ).run();
+
+  // Migration 3 — human review tracking (separates "reviewed by a human" from
+  // passive "last_accessed" so confirmed memories aren't auto-archived by search hits)
+  const hasHumanReviewedAt = db.prepare(
+    "SELECT 1 FROM pragma_table_info('memories') WHERE name='human_reviewed_at'"
+  ).get();
+  if (!hasHumanReviewedAt) {
+    db.exec(`ALTER TABLE memories ADD COLUMN human_reviewed_at TEXT;`);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, datetime('now'))"
+  ).run();
 }
 
 function createVectorTable(db: Database.Database): void {

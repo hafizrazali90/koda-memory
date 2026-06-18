@@ -8,15 +8,14 @@ export interface FtsResult {
   score: number; // BM25 score (lower = more relevant, we normalize later)
 }
 
-// Common stop words to filter out from queries
+// Grammatical stop words only — deliberately excludes technical terms like
+// 'not', 'no', 'working', 'up', 'out', 'if' which are meaningful in dev queries
 const STOP_WORDS = new Set([
-  'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'a', 'an', 'the', 'and', 'but', 'in', 'on', 'at', 'to', 'for',
   'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
   'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-  'should', 'may', 'might', 'shall', 'can', 'need', 'i', 'we', 'you',
+  'should', 'may', 'might', 'shall', 'can', 'i', 'we', 'you',
   'he', 'she', 'it', 'they', 'this', 'that', 'these', 'those', 'am',
-  'working', 'work', 'about', 'from', 'up', 'out', 'if', 'not', 'no',
-  'so', 'what', 'which', 'who', 'when', 'where', 'how', 'all', 'each',
 ]);
 
 /**

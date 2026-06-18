@@ -99,11 +99,16 @@ function createMcpServer(userId: string): McpServer {
       tags: z.array(z.string()).optional().describe('Tags for filtering'),
       source: z.enum(['user-stated', 'auto-captured', 'correction']).optional().describe('How this was captured'),
       project: z.string().optional().describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
+      scope: z.enum(['personal', 'project']).optional().describe(
+        'personal (default) = only you can see it; project = visible to all Sifututor team members'
+      ),
     },
     async (params) => {
       const db = getConnection();
       const project = resolveProject(params.project);
-      const result = await memoryStore(db, project, userId, params);
+      // When scope=project, store under the shared 'sifututor' namespace so all devs can read it
+      const effectiveUserId = params.scope === 'project' ? 'sifututor' : userId;
+      const result = await memoryStore(db, project, effectiveUserId, params);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };

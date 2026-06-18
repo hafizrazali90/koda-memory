@@ -43,7 +43,9 @@ export async function memoryUpdate(
       fieldsUpdated.push('why');
     }
     if (input.confidence !== undefined) {
-      db.prepare('UPDATE memories SET confidence = ?, updated_at = ? WHERE id = ?').run(input.confidence, now, input.id);
+      // An explicit confidence verdict is a human review — stamp the review clock
+      // so auto-archive measures staleness from this touch, not passive search hits
+      db.prepare('UPDATE memories SET confidence = ?, human_reviewed_at = ?, updated_at = ? WHERE id = ?').run(input.confidence, now, now, input.id);
       fieldsUpdated.push('confidence');
     }
     if (input.source !== undefined) {
@@ -78,7 +80,7 @@ export async function memoryUpdate(
   })();
 
   let reEmbedded = false;
-  if (input.content !== undefined) {
+  if (input.content !== undefined || input.why !== undefined) {
     const content = input.content ?? existing.content;
     const why = input.why ?? existing.why;
     reEmbedded = await storeEmbedding(db, input.id, content, why);
