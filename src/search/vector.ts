@@ -26,11 +26,15 @@ export function deleteEmbedding(db: Database.Database, memoryId: string): void {
 
 /**
  * Search for similar memories using vector cosine distance.
+ * When userId is given, restricts to the caller's own + shared + project memories.
+ * sqlite-vec KNN uses LIMIT as k, so we can't filter pre-LIMIT — instead we
+ * over-fetch candidates and filter by visibility, then trim to the page size.
  */
 export async function vectorSearch(
   db: Database.Database,
   query: string,
-  limit: number = 20
+  limit: number = 20,
+  userId?: string
 ): Promise<VectorResult[]> {
   if (!isEmbeddingAvailable()) {
     return [];
@@ -38,7 +42,25 @@ export async function vectorSearch(
 
   const queryEmbedding = await generateEmbedding(query);
 
-  return vectorSearchByEmbedding(db, queryEmbedding, limit);
+  if (!userId) {
+    return vectorSearchByEmbedding(db, queryEmbedding, limit);
+  }
+
+  // Over-fetch (4x) then filter to visible memories
+  const candidates = vectorSearchByEmbedding(db, queryEmbedding, limit * 4);
+  if (candidates.length === 0) return [];
+
+  const ids = candidates.map((c) => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const visibleRows = db
+    .prepare(
+      `SELECT id FROM memories WHERE id IN (${placeholders})
+         AND (user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')`
+    )
+    .all(...ids, userId) as { id: string }[];
+  const visible = new Set(visibleRows.map((r) => r.id));
+
+  return candidates.filter((c) => visible.has(c.id)).slice(0, limit);
 }
 
 /**

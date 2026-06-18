@@ -35,8 +35,8 @@ export async function memoryContext(
   const graphDepth = Math.min(input.graph_depth ?? 1, 3);
 
   const [ftsResults, vecResults] = await Promise.all([
-    Promise.resolve(ftsSearch(db, input.task_description, { limit: limit * 2, operator: 'OR' })),
-    vectorSearch(db, input.task_description, limit * 2).catch(() => []),
+    Promise.resolve(ftsSearch(db, input.task_description, { limit: limit * 2, operator: 'OR', userId })),
+    vectorSearch(db, input.task_description, limit * 2, userId).catch(() => []),
   ]);
 
   const seedIds = new Set<string>();

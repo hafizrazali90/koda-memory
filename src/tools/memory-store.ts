@@ -39,7 +39,8 @@ export async function memoryStore(
   db: Database.Database,
   project: string,
   userId: string,
-  input: MemoryStoreInput
+  input: MemoryStoreInput,
+  createdBy?: string
 ): Promise<MemoryStoreResult> {
   // Step 1 — vector similarity check (find potential duplicates)
   let similar: SimilarMemory[] = [];
@@ -117,14 +118,15 @@ export async function memoryStore(
 
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO memories (id, project, user_id, category, content, why, source, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (id, project, user_id, category, content, why, source, created_at, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, project, userId,
       finalInput.category, finalInput.content,
       finalInput.why ?? null,
       finalInput.source ?? 'auto-captured',
-      now
+      now,
+      createdBy ?? userId
     );
 
     const tagsText = finalInput.tags?.join(' ') ?? '';

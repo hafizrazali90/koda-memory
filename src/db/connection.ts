@@ -98,6 +98,24 @@ function runMigrations(db: Database.Database): void {
   db.prepare(
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, datetime('now'))"
   ).run();
+
+  // Migration 4 — provenance + flag-as-outdated governance for project memories
+  // created_by: original author (even when stored under the shared 'sifututor' user)
+  // flagged_outdated_by/at: any team member can flag a shared memory for review
+  const hasCreatedBy = db.prepare(
+    "SELECT 1 FROM pragma_table_info('memories') WHERE name='created_by'"
+  ).get();
+  if (!hasCreatedBy) {
+    db.exec(`
+      ALTER TABLE memories ADD COLUMN created_by TEXT;
+      ALTER TABLE memories ADD COLUMN flagged_outdated_by TEXT;
+      ALTER TABLE memories ADD COLUMN flagged_outdated_at TEXT;
+    `);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, datetime('now'))"
+  ).run();
 }
 
 function createVectorTable(db: Database.Database): void {

@@ -8,10 +8,16 @@
 
 - **Sprint 1 (retrieval quality) — SHIPPED 2026-06-18:** P9, P8, P1, P2
 - **Sprint 2 (correctness + safety) — SHIPPED 2026-06-18:** P7, P5, P6
-- **Sprint 3 (governance) — PENDING (needs design input):** P4, P3
+- **Sprint 3 (governance) — SHIPPED 2026-06-18:** P4, P3
 - **Later:** P10 (bi-temporal)
 
-Schema migration 3 (`human_reviewed_at`) applied to production `brain.db` on KVM8; pre-migration backup at `/opt/koda/brain.db.bak-pre-sprint2-20260618-142016`.
+Schema migrations applied to production `brain.db` on KVM8:
+- Migration 3 (`human_reviewed_at`) — backup `/opt/koda/brain.db.bak-pre-sprint2-20260618-142016`
+- Migration 4 (`created_by`, `flagged_outdated_by`, `flagged_outdated_at`) — backup `/opt/koda/brain.db.bak-pre-sprint3-20260618-143939`
+
+New tool: `memory_flag` — any authenticated user can flag/unflag any visible memory as
+outdated for human review (no ownership check, no delete, no confidence change). Flagged
+memories surface in `project_health.memory.flagged_for_review`.
 
 
 ---

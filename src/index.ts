@@ -12,6 +12,7 @@ import { memoryRelate } from './tools/memory-relate.js';
 import { memoryContext } from './tools/memory-context.js';
 import { memoryUpdate } from './tools/memory-update.js';
 import { memoryForget } from './tools/memory-forget.js';
+import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
 
@@ -108,7 +109,8 @@ function createMcpServer(userId: string): McpServer {
       const project = resolveProject(params.project);
       // When scope=project, store under the shared 'sifututor' namespace so all devs can read it
       const effectiveUserId = params.scope === 'project' ? 'sifututor' : userId;
-      const result = await memoryStore(db, project, effectiveUserId, params);
+      // created_by always records the real author, even for project-scoped writes
+      const result = await memoryStore(db, project, effectiveUserId, params, userId);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -240,6 +242,31 @@ function createMcpServer(userId: string): McpServer {
       try {
         const db = getConnection();
         const result = memoryForget(db, userId, params.id);
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (error: any) {
+        return {
+          content: [{ type: 'text' as const, text: error.message }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // memory_flag
+  server.tool(
+    'memory_flag',
+    'Flag a shared/project memory as potentially outdated for human review (or clear a flag). Does not delete or change confidence. Any team member can flag any memory they can see.',
+    {
+      id: z.string().describe('Memory ID to flag'),
+      reason: z.string().optional().describe('Why it looks outdated'),
+      clear: z.boolean().optional().describe('Set true to remove an existing flag'),
+    },
+    async (params) => {
+      try {
+        const db = getConnection();
+        const result = memoryFlag(db, userId, params);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };

@@ -29,8 +29,8 @@ export async function memorySearch(
   const limit = input.limit ?? 10;
 
   const [ftsResults, vecResults] = await Promise.all([
-    Promise.resolve(ftsSearch(db, input.query, { category: input.category, tags: input.tags, limit })),
-    vectorSearch(db, input.query, limit).catch(() => []),
+    Promise.resolve(ftsSearch(db, input.query, { category: input.category, tags: input.tags, limit, userId })),
+    vectorSearch(db, input.query, limit, userId).catch(() => []),
   ]);
 
   // Collect metadata (recency + signal weighting) before blending

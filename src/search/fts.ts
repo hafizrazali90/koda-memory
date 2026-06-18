@@ -30,6 +30,7 @@ export function ftsSearch(
     tags?: string[];
     limit?: number;
     operator?: 'AND' | 'OR';
+    userId?: string;
   }
 ): FtsResult[] {
   const limit = options?.limit ?? 20;
@@ -42,7 +43,33 @@ export function ftsSearch(
     return [];
   }
 
-  let sql = `
+  // Build WHERE clauses incrementally. JOIN memories only when we need a
+  // column from it (visibility or category filter).
+  const conditions: string[] = ['memories_fts MATCH ?'];
+  const params: any[] = [ftsQuery];
+  let joinMemories = false;
+
+  // Visibility: caller's own + shared + project-wide (sifututor). Filtered here
+  // in SQL (before LIMIT) so the search yields a full page of visible results.
+  if (options?.userId) {
+    joinMemories = true;
+    conditions.push("(m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor')");
+    params.push(options.userId);
+  }
+
+  if (options?.category) {
+    joinMemories = true;
+    conditions.push('m.category = ?');
+    params.push(options.category);
+  }
+
+  if (options?.tags && options.tags.length > 0) {
+    const tagPlaceholders = options.tags.map(() => '?').join(', ');
+    conditions.push(`f.id IN (SELECT memory_id FROM tags WHERE tag IN (${tagPlaceholders}))`);
+    params.push(...options.tags);
+  }
+
+  const sql = `
     SELECT
       f.id,
       f.content,
@@ -50,57 +77,17 @@ export function ftsSearch(
       f.tags,
       bm25(memories_fts, 0, 10, 5, 3) as score
     FROM memories_fts f
-    WHERE memories_fts MATCH ?
-  `;
-
-  const params: any[] = [ftsQuery];
-
-  // Filter by category if provided (join with memories table)
-  if (options?.category) {
-    sql = `
-      SELECT
-        f.id,
-        f.content,
-        f.why,
-        f.tags,
-        bm25(memories_fts, 0, 10, 5, 3) as score
-      FROM memories_fts f
-      JOIN memories m ON m.id = f.id
-      WHERE memories_fts MATCH ?
-        AND m.category = ?
-    `;
-    params.push(options.category);
-  }
-
-  // Filter by tags if provided
-  if (options?.tags && options.tags.length > 0) {
-    const tagPlaceholders = options.tags.map(() => '?').join(', ');
-    if (options?.category) {
-      sql += `\n        AND f.id IN (SELECT memory_id FROM tags WHERE tag IN (${tagPlaceholders}))`;
-    } else {
-      sql = `
-        SELECT
-          f.id,
-          f.content,
-          f.why,
-          f.tags,
-          bm25(memories_fts, 0, 10, 5, 3) as score
-        FROM memories_fts f
-        WHERE memories_fts MATCH ?
-          AND f.id IN (SELECT memory_id FROM tags WHERE tag IN (${tagPlaceholders}))
-      `;
-    }
-    params.push(...options.tags);
-  }
-
-  sql += `\n    ORDER BY score\n    LIMIT ?`;
+    ${joinMemories ? 'JOIN memories m ON m.id = f.id' : ''}
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY score
+    LIMIT ?`;
   params.push(limit);
 
   try {
     return db.prepare(sql).all(...params) as FtsResult[];
   } catch {
     // If FTS query syntax fails, try a simpler query
-    return simpleFtsSearch(db, query, limit);
+    return simpleFtsSearch(db, query, limit, options?.userId);
   }
 }
 
@@ -148,7 +135,7 @@ function sanitizeFtsQuery(query: string, operator: 'AND' | 'OR' = 'AND'): string
 /**
  * Fallback search: wrap each word as a prefix match with OR.
  */
-function simpleFtsSearch(db: Database.Database, query: string, limit: number): FtsResult[] {
+function simpleFtsSearch(db: Database.Database, query: string, limit: number, userId?: string): FtsResult[] {
   const words = query.split(/\s+/).filter((w) => w.length > 1);
   if (words.length === 0) return [];
 
@@ -160,16 +147,23 @@ function simpleFtsSearch(db: Database.Database, query: string, limit: number): F
 
   if (!ftsQuery) return [];
 
+  const params: any[] = [ftsQuery];
+  const userFilter = userId
+    ? "JOIN memories m ON m.id = f.id WHERE memories_fts MATCH ? AND (m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor')"
+    : 'WHERE memories_fts MATCH ?';
+  if (userId) params.push(userId);
+  params.push(limit);
+
   try {
     return db
       .prepare(
-        `SELECT id, content, why, tags, bm25(memories_fts, 0, 10, 5, 3) as score
-         FROM memories_fts
-         WHERE memories_fts MATCH ?
+        `SELECT f.id, f.content, f.why, f.tags, bm25(memories_fts, 0, 10, 5, 3) as score
+         FROM memories_fts f
+         ${userFilter}
          ORDER BY score
          LIMIT ?`
       )
-      .all(ftsQuery, limit) as FtsResult[];
+      .all(...params) as FtsResult[];
   } catch {
     return [];
   }
