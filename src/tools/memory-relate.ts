@@ -10,6 +10,7 @@ export interface MemoryRelateInput {
 export interface MemoryRelateResult {
   message: string;
   bidirectional: boolean;
+  superseded?: string;
 }
 
 export function memoryRelate(db: Database.Database, input: MemoryRelateInput): MemoryRelateResult {
@@ -28,8 +29,20 @@ export function memoryRelate(db: Database.Database, input: MemoryRelateInput): M
 
   const bidirectional = input.relation_type === 'relates-to';
 
+  // Bi-temporal supersession: "source supersedes target" end-dates the target.
+  // It's marked superseded (excluded from search) and outdated, but kept for history.
+  let superseded: string | undefined;
+  if (input.relation_type === 'supersedes') {
+    const now = new Date().toISOString();
+    db.prepare(
+      "UPDATE memories SET superseded_at = ?, confidence = 'outdated', updated_at = ? WHERE id = ? AND superseded_at IS NULL"
+    ).run(now, now, input.target_id);
+    superseded = input.target_id;
+  }
+
   return {
-    message: `Created ${input.relation_type} relationship: ${input.source_id} → ${input.target_id}${bidirectional ? ' (bidirectional)' : ''}`,
+    message: `Created ${input.relation_type} relationship: ${input.source_id} → ${input.target_id}${bidirectional ? ' (bidirectional)' : ''}${superseded ? `. ${superseded} marked superseded (kept for history, excluded from search).` : ''}`,
     bidirectional,
+    ...(superseded ? { superseded } : {}),
   };
 }

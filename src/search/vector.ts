@@ -55,7 +55,8 @@ export async function vectorSearch(
   const visibleRows = db
     .prepare(
       `SELECT id FROM memories WHERE id IN (${placeholders})
-         AND (user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')`
+         AND (user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')
+         AND superseded_at IS NULL`
     )
     .all(...ids, userId) as { id: string }[];
   const visible = new Set(visibleRows.map((r) => r.id));

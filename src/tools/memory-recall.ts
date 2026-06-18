@@ -13,6 +13,11 @@ export interface MemoryEntry {
   updated_at: string | null;
   last_accessed: string | null;
   access_count: number;
+  created_by: string | null;
+  human_reviewed_at: string | null;
+  flagged_outdated_by: string | null;
+  flagged_outdated_at: string | null;
+  superseded_at: string | null;
 }
 
 export function memoryRecall(db: Database.Database, id: string): MemoryEntry | null {
@@ -47,5 +52,10 @@ export function memoryRecall(db: Database.Database, id: string): MemoryEntry | n
     updated_at: memory.updated_at,
     last_accessed: memory.last_accessed,
     access_count: memory.access_count,
+    created_by: memory.created_by ?? null,
+    human_reviewed_at: memory.human_reviewed_at ?? null,
+    flagged_outdated_by: memory.flagged_outdated_by ?? null,
+    flagged_outdated_at: memory.flagged_outdated_at ?? null,
+    superseded_at: memory.superseded_at ?? null,
   };
 }

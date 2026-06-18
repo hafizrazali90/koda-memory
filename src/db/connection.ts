@@ -116,6 +116,21 @@ function runMigrations(db: Database.Database): void {
   db.prepare(
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, datetime('now'))"
   ).run();
+
+  // Migration 5 — bi-temporal supersession. superseded_at marks a memory whose
+  // fact has been replaced by a newer one (via a 'supersedes' relationship).
+  // Superseded memories are excluded from search/context by default but kept
+  // for history and still retrievable by id.
+  const hasSupersededAt = db.prepare(
+    "SELECT 1 FROM pragma_table_info('memories') WHERE name='superseded_at'"
+  ).get();
+  if (!hasSupersededAt) {
+    db.exec(`ALTER TABLE memories ADD COLUMN superseded_at TEXT;`);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))"
+  ).run();
 }
 
 function createVectorTable(db: Database.Database): void {
