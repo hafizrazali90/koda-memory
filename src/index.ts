@@ -15,70 +15,22 @@ import { memoryForget } from './tools/memory-forget.js';
 import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
+import { buildUserMap, resolveUserFromToken, extractToken } from './auth.js';
 
 // --- Config ---
 
 const PORT = parseInt(process.env.PORT || '3848', 10);
-const KODA_API_KEY = process.env.KODA_API_KEY; // Legacy single-key (maps to KODA_DEFAULT_USER)
 
 function resolveProject(paramProject?: string): string {
   return paramProject || process.env.KODA_DEFAULT_PROJECT || 'default';
 }
 
-// --- Per-user API key resolution ---
-//
-// Option A — single key (legacy, backward-compatible):
-//   KODA_API_KEY=xxx  → user_id = KODA_DEFAULT_USER (default: "hafiz")
-//
-// Option B — per-user keys:
-//   KODA_USERS=hafiz:key_abc,ali:key_def,sara:key_ghi
-//   Memories are isolated per user_id.
-//   user_id "shared" is readable by ALL users (curated team knowledge).
-
-function buildUserMap(): Map<string, string> {
-  const map = new Map<string, string>();
-
-  if (KODA_API_KEY) {
-    const defaultUser = process.env.KODA_DEFAULT_USER || 'hafiz';
-    map.set(KODA_API_KEY, defaultUser);
-  }
-
-  const usersEnv = process.env.KODA_USERS;
-  if (usersEnv) {
-    for (const pair of usersEnv.split(',')) {
-      const colonIdx = pair.indexOf(':');
-      if (colonIdx === -1) continue;
-      const userId = pair.slice(0, colonIdx).trim();
-      const key = pair.slice(colonIdx + 1).trim();
-      if (userId && key) map.set(key, userId);
-    }
-  }
-
-  return map;
-}
-
+// Per-user API key resolution lives in ./auth.js (extracted for unit testing).
 const USER_MAP = buildUserMap();
 
 function resolveUser(req: IncomingMessage): string | null {
-  if (USER_MAP.size === 0) return 'hafiz'; // dev mode — no auth
-
-  let token: string | null = null;
-
-  const auth = req.headers['authorization'];
-  if (auth) {
-    const spaceIdx = auth.indexOf(' ');
-    if (spaceIdx !== -1 && auth.slice(0, spaceIdx) === 'Bearer') {
-      token = auth.slice(spaceIdx + 1);
-    }
-  }
-
-  if (!token) {
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    token = url.searchParams.get('apiKey');
-  }
-
-  if (!token) return null;
-  return USER_MAP.get(token) ?? null;
+  const token = extractToken(req.headers['authorization'], req.url, req.headers.host);
+  return resolveUserFromToken(USER_MAP, token);
 }
 
 // --- MCP Server factory ---
@@ -499,7 +451,7 @@ async function main() {
     console.log(`Koda Memory server listening on http://0.0.0.0:${PORT}`);
     console.log(`SSE endpoint: GET /sse + POST /messages`);
     console.log(`Streamable HTTP endpoint: POST /mcp`);
-    console.log(`Auth: ${KODA_API_KEY ? 'enabled' : 'DISABLED (no KODA_API_KEY set)'}`);
+    console.log(`Auth: ${USER_MAP.size > 0 ? 'enabled' : 'DISABLED (no keys set — dev mode)'}`);
     console.log(`DB: ${process.env.KODA_DB_PATH || '(default: .koda/brain.db)'}`);
   });
 }
