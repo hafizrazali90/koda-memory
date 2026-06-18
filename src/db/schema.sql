@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS memories (
   human_reviewed_at TEXT,
   created_by TEXT,
   flagged_outdated_by TEXT,
-  flagged_outdated_at TEXT
+  flagged_outdated_at TEXT,
+  superseded_at TEXT
 );
 
 -- Full-text search index (standalone FTS5 with Porter stemmer)

@@ -51,9 +51,11 @@ export function ftsSearch(
 
   // Visibility: caller's own + shared + project-wide (sifututor). Filtered here
   // in SQL (before LIMIT) so the search yields a full page of visible results.
+  // Superseded memories are excluded — their facts have been replaced.
   if (options?.userId) {
     joinMemories = true;
     conditions.push("(m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor')");
+    conditions.push('m.superseded_at IS NULL');
     params.push(options.userId);
   }
 
@@ -149,7 +151,7 @@ function simpleFtsSearch(db: Database.Database, query: string, limit: number, us
 
   const params: any[] = [ftsQuery];
   const userFilter = userId
-    ? "JOIN memories m ON m.id = f.id WHERE memories_fts MATCH ? AND (m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor')"
+    ? "JOIN memories m ON m.id = f.id WHERE memories_fts MATCH ? AND (m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor') AND m.superseded_at IS NULL"
     : 'WHERE memories_fts MATCH ?';
   if (userId) params.push(userId);
   params.push(limit);

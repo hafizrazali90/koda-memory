@@ -63,9 +63,11 @@ export async function memoryContext(
   const memories: ContextMemory[] = [];
 
   for (const result of blended) {
-    // Show this user's personal memories + shared team memories + sifututor project memories
+    // Show this user's personal memories + shared team memories + sifututor project memories.
+    // Exclude superseded — the graph path can surface a superseded neighbor that the
+    // fts/vector source filters already drop.
     const memory = db.prepare(
-      'SELECT * FROM memories WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = ?)'
+      'SELECT * FROM memories WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = ?) AND superseded_at IS NULL'
     ).get(result.id, userId, 'shared', 'sifututor') as any;
     if (!memory) continue;
 

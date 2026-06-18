@@ -6,18 +6,27 @@
 
 ## Status
 
-- **Sprint 1 (retrieval quality) — SHIPPED 2026-06-18:** P9, P8, P1, P2
-- **Sprint 2 (correctness + safety) — SHIPPED 2026-06-18:** P7, P5, P6
-- **Sprint 3 (governance) — SHIPPED 2026-06-18:** P4, P3
-- **Later:** P10 (bi-temporal)
+**ALL ROADMAP ITEMS SHIPPED 2026-06-18.**
 
-Schema migrations applied to production `brain.db` on KVM8:
+- **Sprint 1 (retrieval quality) — SHIPPED:** P9, P8, P1, P2
+- **Sprint 2 (correctness + safety) — SHIPPED:** P7, P5, P6
+- **Sprint 3 (governance) — SHIPPED:** P4, P3
+- **Sprint 4 (bi-temporal) — SHIPPED:** P10
+
+Schema migrations applied to production `brain.db` on KVM8 (idempotent, run on startup):
 - Migration 3 (`human_reviewed_at`) — backup `/opt/koda/brain.db.bak-pre-sprint2-20260618-142016`
 - Migration 4 (`created_by`, `flagged_outdated_by`, `flagged_outdated_at`) — backup `/opt/koda/brain.db.bak-pre-sprint3-20260618-143939`
+- Migration 5 (`superseded_at`) — backup `/opt/koda/brain.db.bak-pre-p10-20260618-145503`
 
-New tool: `memory_flag` — any authenticated user can flag/unflag any visible memory as
-outdated for human review (no ownership check, no delete, no confidence change). Flagged
-memories surface in `project_health.memory.flagged_for_review`.
+New tools / behavior:
+- `memory_flag` — any authenticated user can flag/unflag any visible memory as outdated for
+  human review (no ownership check, no delete, no confidence change). Surfaces in
+  `project_health.memory.flagged_for_review`.
+- `memory_relate` with `relation_type: 'supersedes'` now end-dates the target: sets
+  `superseded_at`, marks it `outdated`, and excludes it from search/context (still
+  retrievable by id, surfaced in `project_health.memory.superseded_count`).
+- `memory_recall` now returns provenance + temporal fields (`created_by`, `human_reviewed_at`,
+  `flagged_outdated_by/at`, `superseded_at`).
 
 
 ---

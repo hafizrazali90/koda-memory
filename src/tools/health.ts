@@ -17,6 +17,7 @@ export interface HealthReport {
     stale_count: number;
     flagged_count: number;
     flagged_for_review: FlaggedMemory[];
+    superseded_count: number;
     total_sessions: number;
     total_relationships: number;
   };
@@ -36,6 +37,7 @@ export function projectHealth(db: Database.Database): HealthReport {
       stale_count: 0,
       flagged_count: 0,
       flagged_for_review: [],
+      superseded_count: 0,
       total_sessions: 0,
       total_relationships: 0,
     },
@@ -83,6 +85,12 @@ export function projectHealth(db: Database.Database): HealthReport {
     .all() as FlaggedMemory[];
   report.memory.flagged_count = flaggedRows.length;
   report.memory.flagged_for_review = flaggedRows;
+
+  // Superseded memories (fact replaced by a newer one; excluded from search)
+  const superseded = db
+    .prepare('SELECT COUNT(*) as count FROM memories WHERE superseded_at IS NOT NULL')
+    .get() as { count: number };
+  report.memory.superseded_count = superseded.count;
 
   const sessionCount = db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };
   report.memory.total_sessions = sessionCount.count;
