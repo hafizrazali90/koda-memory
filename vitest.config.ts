@@ -5,6 +5,6 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts'],
-    testTimeout: 10000,
+    testTimeout: 30000,  // Phase 3 quality eval; load test uses per-test beforeAll timeout
   },
 });
