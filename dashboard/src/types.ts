@@ -44,26 +44,25 @@ export interface MemoryRelation {
 // ---- API response types ----
 
 export interface Stats {
-  total: number;
-  confirmed: number;
-  inferred: number;
-  outdated: number;
-  flagged: number;
-  superseded: number;
-  queue_depth: number;
-  search_gaps: number;
-  by_user: Array<{ user_id: string; count: number }>;
-  by_project: Array<{ project: string; count: number }>;
-  by_category: Array<{ category: string; count: number }>;
-  by_confidence: Array<{ confidence: string; count: number }>;
+  total_memories: number;
+  flagged_count: number;
+  superseded_count: number;
+  deleted_count: number;
+  validation_queue_depth: number;
+  search_gaps_count: number;
+  recent_audit_count: number;
+  by_user: Record<string, number>;
+  by_project: Record<string, number>;
+  by_confidence: Record<string, number>;
+  by_category: Record<string, number>;
 }
 
 export interface MemoriesResponse {
   memories: Memory[];
   total: number;
   page: number;
-  per_page: number;
-  total_pages: number;
+  limit: number;
+  pages: number;
 }
 
 export interface MemoryDetail extends Memory {

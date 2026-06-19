@@ -2,7 +2,6 @@ import { useEffect, useState, useCallback } from 'react';
 import { getStats } from '../api';
 import type { Stats } from '../types';
 
-// ---- Stat card ----
 function StatCard({ label, value, color = 'indigo' }: { label: string; value: number | string; color?: string }) {
   const colors: Record<string, string> = {
     indigo: 'text-indigo-400',
@@ -22,21 +21,18 @@ function StatCard({ label, value, color = 'indigo' }: { label: string; value: nu
   );
 }
 
-// ---- Horizontal bar chart (inline divs) ----
-function BarChart({ title, data, keyLabel }: {
+function BarChart({ title, rows, keyLabel }: {
   title: string;
-  data: Array<{ label: string; count: number }>;
+  rows: Array<{ label: string; count: number }>;
   keyLabel: string;
 }) {
-  const max = Math.max(...data.map(d => d.count), 1);
+  const max = Math.max(...rows.map(d => d.count), 1);
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">{title}</h3>
-      {data.length === 0 && (
-        <p className="text-gray-500 text-sm">No data available</p>
-      )}
+      {rows.length === 0 && <p className="text-gray-500 text-sm">No data yet</p>}
       <div className="space-y-3">
-        {data.map(row => (
+        {rows.map(row => (
           <div key={row.label} className="flex items-center gap-3">
             <span className="text-gray-300 text-sm w-32 shrink-0 truncate" title={row.label}>
               {row.label || '(none)'}
@@ -56,7 +52,6 @@ function BarChart({ title, data, keyLabel }: {
   );
 }
 
-// ---- Main page ----
 export default function StatsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState('');
@@ -107,24 +102,28 @@ export default function StatsPage() {
 
   if (!stats) return null;
 
-  const topUsers = [...(stats.by_user || [])]
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5)
-    .map(u => ({ label: u.user_id, count: u.count }));
+  const confirmed  = stats.by_confidence?.confirmed  ?? 0;
+  const inferred   = stats.by_confidence?.inferred   ?? 0;
+  const outdated   = stats.by_confidence?.outdated   ?? 0;
+  const total      = stats.total_memories ?? 0;
 
-  const topProjects = [...(stats.by_project || [])]
+  const topUsers = Object.entries(stats.by_user || {})
+    .map(([user_id, count]) => ({ label: user_id, count }))
     .sort((a, b) => b.count - a.count)
-    .slice(0, 5)
-    .map(p => ({ label: p.project || '(none)', count: p.count }));
+    .slice(0, 5);
 
-  const topCategories = [...(stats.by_category || [])]
+  const topProjects = Object.entries(stats.by_project || {})
+    .map(([project, count]) => ({ label: project || '(none)', count }))
     .sort((a, b) => b.count - a.count)
-    .slice(0, 5)
-    .map(c => ({ label: c.category, count: c.count }));
+    .slice(0, 5);
+
+  const topCategories = Object.entries(stats.by_category || {})
+    .map(([category, count]) => ({ label: category, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-white">Overview</h2>
@@ -136,8 +135,7 @@ export default function StatsPage() {
         </div>
         <button
           onClick={load}
-          className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300
-                     rounded-lg text-sm transition"
+          className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -147,67 +145,61 @@ export default function StatsPage() {
         </button>
       </div>
 
-      {/* Stats grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatCard label="Total Memories" value={stats.total} color="indigo" />
-        <StatCard label="Confirmed" value={stats.confirmed} color="green" />
-        <StatCard label="Flagged" value={stats.flagged} color="orange" />
-        <StatCard label="Superseded" value={stats.superseded} color="gray" />
-        <StatCard label="Inferred" value={stats.inferred} color="yellow" />
-        <StatCard label="Outdated" value={stats.outdated} color="red" />
-        <StatCard label="Queue Depth" value={stats.queue_depth} color="blue" />
-        <StatCard label="Search Gaps" value={stats.search_gaps} color="purple" />
+        <StatCard label="Total Memories"  value={total}                          color="indigo"  />
+        <StatCard label="Confirmed"        value={confirmed}                      color="green"   />
+        <StatCard label="Inferred"         value={inferred}                       color="yellow"  />
+        <StatCard label="Outdated"         value={outdated}                       color="red"     />
+        <StatCard label="Flagged"          value={stats.flagged_count ?? 0}       color="orange"  />
+        <StatCard label="Superseded"       value={stats.superseded_count ?? 0}    color="gray"    />
+        <StatCard label="Queue Depth"      value={stats.validation_queue_depth ?? 0} color="blue" />
+        <StatCard label="Search Gaps"      value={stats.search_gaps_count ?? 0}   color="purple"  />
       </div>
 
-      {/* Confidence breakdown mini bars */}
-      <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Confidence Breakdown</h3>
-        <div className="flex items-center gap-2 h-8">
-          {stats.total > 0 && (
-            <>
+      {total > 0 && (
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Confidence Breakdown</h3>
+          <div className="flex items-center gap-1 h-8 rounded overflow-hidden">
+            {confirmed > 0 && (
               <div
-                className="h-full rounded-l bg-green-600 flex items-center justify-center text-xs text-white font-medium px-2 min-w-[2rem]"
-                style={{ width: `${(stats.confirmed / stats.total) * 100}%` }}
-                title={`Confirmed: ${stats.confirmed}`}
+                className="h-full bg-green-600 flex items-center justify-center text-xs text-white font-medium px-2"
+                style={{ width: `${(confirmed / total) * 100}%` }}
+                title={`Confirmed: ${confirmed}`}
               >
-                {stats.confirmed > 0 && `${Math.round((stats.confirmed / stats.total) * 100)}%`}
+                {Math.round((confirmed / total) * 100)}%
               </div>
+            )}
+            {inferred > 0 && (
               <div
-                className="h-full bg-yellow-600 flex items-center justify-center text-xs text-white font-medium px-2 min-w-[2rem]"
-                style={{ width: `${(stats.inferred / stats.total) * 100}%` }}
-                title={`Inferred: ${stats.inferred}`}
+                className="h-full bg-yellow-600 flex items-center justify-center text-xs text-white font-medium px-2"
+                style={{ width: `${(inferred / total) * 100}%` }}
+                title={`Inferred: ${inferred}`}
               >
-                {stats.inferred > 0 && `${Math.round((stats.inferred / stats.total) * 100)}%`}
+                {Math.round((inferred / total) * 100)}%
               </div>
+            )}
+            {outdated > 0 && (
               <div
-                className="h-full rounded-r bg-red-700 flex items-center justify-center text-xs text-white font-medium px-2 min-w-[2rem]"
-                style={{ width: `${(stats.outdated / stats.total) * 100}%` }}
-                title={`Outdated: ${stats.outdated}`}
+                className="h-full bg-red-700 flex items-center justify-center text-xs text-white font-medium px-2"
+                style={{ width: `${(outdated / total) * 100}%` }}
+                title={`Outdated: ${outdated}`}
               >
-                {stats.outdated > 0 && `${Math.round((stats.outdated / stats.total) * 100)}%`}
+                {Math.round((outdated / total) * 100)}%
               </div>
-            </>
-          )}
-          {stats.total === 0 && <span className="text-gray-500 text-sm">No memories yet</span>}
+            )}
+          </div>
+          <div className="flex gap-4 mt-3 text-xs text-gray-400">
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-green-600 inline-block" /> Confirmed</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-yellow-600 inline-block" /> Inferred</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-700 inline-block" /> Outdated</span>
+          </div>
         </div>
-        <div className="flex gap-4 mt-3 text-xs text-gray-400">
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-sm bg-green-600 inline-block" /> Confirmed
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-sm bg-yellow-600 inline-block" /> Inferred
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-sm bg-red-700 inline-block" /> Outdated
-          </span>
-        </div>
-      </div>
+      )}
 
-      {/* Charts */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        <BarChart title="Top Users" data={topUsers} keyLabel="user" />
-        <BarChart title="Top Projects" data={topProjects} keyLabel="project" />
-        <BarChart title="Top Categories" data={topCategories} keyLabel="category" />
+        <BarChart title="Top Users"      rows={topUsers}      keyLabel="user"     />
+        <BarChart title="Top Projects"   rows={topProjects}   keyLabel="project"  />
+        <BarChart title="Top Categories" rows={topCategories} keyLabel="category" />
       </div>
     </div>
   );

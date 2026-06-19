@@ -115,7 +115,7 @@ export default function MemoriesPage({ onViewMemory }: Props) {
       const res = await getMemories(f);
       setMemories(res.memories || []);
       setTotal(res.total || 0);
-      setTotalPages(res.total_pages || 1);
+      setTotalPages(res.pages || 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Load failed');
     } finally {
