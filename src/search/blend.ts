@@ -19,8 +19,8 @@ const WEIGHT_GRAPH = 0.18;
 const WEIGHT_RECENCY = 0.10;
 
 // Signal boost: reward memories that have proven useful or been human-confirmed
-const BOOST_FREQUENT = 0.05; // access_count > 5
-const BOOST_CONFIRMED = 0.05; // confidence === 'confirmed'
+const BOOST_FREQUENT = 0.15; // access_count > 5
+const BOOST_CONFIRMED = 0.15; // confidence === 'confirmed'
 
 // Per-memory metadata used for recency + signal weighting
 export interface MemoryMeta {

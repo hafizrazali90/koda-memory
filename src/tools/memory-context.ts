@@ -62,31 +62,53 @@ export async function memoryContext(
 
   const memories: ContextMemory[] = [];
 
-  for (const result of blended) {
+  if (blended.length > 0) {
+    // Batch-fetch all memory rows in a single IN query (eliminates N+1)
+    const blendedIds = blended.map((r) => r.id);
+    const idPlaceholders = blendedIds.map(() => '?').join(',');
+
     // Show this user's personal memories + shared team memories + sifututor project memories.
     // Exclude superseded — the graph path can surface a superseded neighbor that the
-    // fts/vector source filters already drop.
-    const memory = db.prepare(
-      'SELECT * FROM memories WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = ?) AND superseded_at IS NULL'
-    ).get(result.id, userId, 'shared', 'sifututor') as any;
-    if (!memory) continue;
+    // fts/vector source filters already drop. Also exclude soft-deleted rows.
+    const memoryRows = db.prepare(
+      `SELECT * FROM memories WHERE id IN (${idPlaceholders})
+       AND (user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')
+       AND superseded_at IS NULL
+       AND deleted_at IS NULL`
+    ).all(...blendedIds, userId) as any[];
+    const memoryById = new Map<string, any>(memoryRows.map((m) => [m.id, m]));
 
-    const tags = db.prepare('SELECT tag FROM tags WHERE memory_id = ?').all(result.id) as { tag: string }[];
+    // Batch-fetch all tags for those IDs in a single IN query
+    const tagRows = db.prepare(
+      `SELECT memory_id, tag FROM tags WHERE memory_id IN (${idPlaceholders})`
+    ).all(...blendedIds) as { memory_id: string; tag: string }[];
+    const tagsByMemoryId = new Map<string, string[]>();
+    for (const row of tagRows) {
+      const list = tagsByMemoryId.get(row.memory_id) ?? [];
+      list.push(row.tag);
+      tagsByMemoryId.set(row.memory_id, list);
+    }
 
-    const sources: string[] = [];
-    if (result.sources.fts !== undefined) sources.push('keyword');
-    if (result.sources.vector !== undefined) sources.push('semantic');
-    if (result.sources.graph !== undefined) sources.push('graph');
+    // Preserve blended sort order, skip rows excluded by the SQL filter
+    for (const result of blended) {
+      const memory = memoryById.get(result.id);
+      if (!memory) continue;
 
-    memories.push({
-      id: memory.id,
-      category: memory.category,
-      content: memory.content,
-      why: memory.why,
-      tags: tags.map((t) => t.tag),
-      relevance_score: Math.round(result.score * 100) / 100,
-      sources,
-    });
+      const sources: string[] = [];
+      if (result.sources.fts !== undefined) sources.push('keyword');
+      if (result.sources.vector !== undefined) sources.push('semantic');
+      if (result.sources.graph !== undefined) sources.push('graph');
+
+      memories.push({
+        id: memory.id,
+        category: memory.category,
+        content: memory.content,
+        why: memory.why,
+        tags: tagsByMemoryId.get(memory.id) ?? [],
+        relevance_score: Math.round(result.score * 100) / 100,
+        sources,
+      });
+    }
   }
 
   const updateAccess = db.prepare(

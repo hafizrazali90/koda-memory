@@ -16,6 +16,7 @@ import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
 import { buildUserMap, resolveUserFromToken, extractToken } from './auth.js';
+import { runValidationBatch } from './validation/engine.js';
 
 // --- Config ---
 
@@ -333,6 +334,22 @@ function createMcpServer(userId: string): McpServer {
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(report, null, 2) }],
+      };
+    }
+  );
+
+  // validation_run
+  server.tool(
+    'validation_run',
+    'Run the background validation pipeline (duplicate + contradiction detection). Returns batch results.',
+    {
+      batch_size: z.number().optional().describe('Number of jobs to process in this batch (default 10)'),
+    },
+    async (params) => {
+      const db = getConnection();
+      const result = await runValidationBatch(db, userId, params.batch_size);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
     }
   );

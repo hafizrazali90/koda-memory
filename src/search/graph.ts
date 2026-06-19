@@ -10,11 +10,13 @@ export interface GraphResult {
   score: number; // Graph relevance score
 }
 
-// Score weights by relationship type
+// Score weights by relationship type.
+// 'contradicts' is intentionally LOW (0.1): a contradicted memory is semantically
+// opposite to what was queried — it should rank near the bottom of search results.
 const RELATION_WEIGHTS: Record<RelationType, number> = {
   'relates-to': 0.6,
   'supersedes': 0.8,
-  'contradicts': 0.9,
+  'contradicts': 0.1,
   'depends-on': 0.7,
 };
 
