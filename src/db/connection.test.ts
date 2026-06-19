@@ -58,9 +58,16 @@ describe('Database Connection', () => {
     expect(fk).toBe(1);
   });
 
-  it('runs all migrations (schema version 12)', () => {
+  it('runs all migrations (schema version 13)', () => {
     const row = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number };
-    expect(row.version).toBe(12);
+    expect(row.version).toBe(13);
+  });
+
+  it('validation_queue has the next_attempt_at retry column', () => {
+    const cols = db
+      .prepare("SELECT name FROM pragma_table_info('validation_queue')")
+      .all() as { name: string }[];
+    expect(cols.map((c) => c.name)).toContain('next_attempt_at');
   });
 
   it('memories table has all migrated columns', () => {

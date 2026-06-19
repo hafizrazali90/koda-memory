@@ -445,7 +445,7 @@ describe('Koda Memory - migration idempotency', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('re-opening the same DB re-runs migrations without error and stays at version 12', () => {
+  it('re-opening the same DB re-runs migrations without error and stays at version 13', () => {
     const db1 = openDatabase({ dbPath });
     const v1 = (db1.prepare('SELECT MAX(version) as v FROM schema_version').get() as { v: number }).v;
     db1.close();
@@ -455,8 +455,8 @@ describe('Koda Memory - migration idempotency', () => {
     const v2 = (db2.prepare('SELECT MAX(version) as v FROM schema_version').get() as { v: number }).v;
     db2.close();
 
-    expect(v1).toBe(12);
-    expect(v2).toBe(12);
+    expect(v1).toBe(13);
+    expect(v2).toBe(13);
   });
 });
 

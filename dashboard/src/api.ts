@@ -75,8 +75,21 @@ export const restoreMemory = (id: string) =>
   api<{ ok: boolean }>('/admin/memories/' + id + '/restore', { method: 'POST' });
 
 // Graph
-export const getGraph = (project?: string) =>
-  api<GraphData>('/admin/graph' + (project ? '?project=' + encodeURIComponent(project) : ''));
+export interface GraphOptions {
+  project?: string;
+  focus?: string;
+  depth?: number;
+  mode?: 'connected' | 'all';
+}
+export function getGraph(opts: GraphOptions = {}) {
+  const params: Record<string, string> = {};
+  if (opts.project) params.project = opts.project;
+  if (opts.focus) params.focus = opts.focus;
+  if (opts.depth != null) params.depth = String(opts.depth);
+  if (opts.mode) params.mode = opts.mode;
+  const qs = new URLSearchParams(params).toString();
+  return api<GraphData>('/admin/graph' + (qs ? '?' + qs : ''));
+}
 
 // Validation
 export const getValidationQueue = () =>

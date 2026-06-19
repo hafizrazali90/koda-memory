@@ -7,6 +7,7 @@ export interface ValidationJob {
   last_error?: string;
   created_at: string;
   processed_at?: string;
+  next_attempt_at?: string | null;
 }
 
 export interface DuplicateResult {

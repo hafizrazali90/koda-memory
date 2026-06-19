@@ -755,35 +755,86 @@ export function createHttpServer(opts?: {
         }
 
         // GET /admin/graph
+        //   ?project=     filter to a project
+        //   ?focus=<id>   center on one memory + neighbours within ?depth (default 1, max 3)
+        //   ?mode=connected (default) only nodes with a relationship; mode=all includes isolated nodes
+        //   ?limit=       node cap (default 200, max 1000)
         if (adminPath.route === 'graph' && req.method === 'GET') {
-          const graphLimit = Math.min(500, parseInt(url.searchParams.get('limit') || '100', 10));
+          const graphLimit = Math.min(1000, parseInt(url.searchParams.get('limit') || '200', 10));
           const graphProject = url.searchParams.get('project');
-
-          const nodeFilters = ['m.deleted_at IS NULL', 'm.superseded_at IS NULL'];
-          const nodeParams: unknown[] = [];
-          if (graphProject) { nodeFilters.push('m.project = ?'); nodeParams.push(graphProject); }
-
-          const nodeWhere = `WHERE ${nodeFilters.join(' AND ')}`;
-
-          const nodes = db.prepare(`
-            SELECT m.id, SUBSTR(m.content, 1, 60) as label, m.confidence, m.user_id, m.category
-            FROM memories m
-            ${nodeWhere}
-            ORDER BY m.created_at DESC
-            LIMIT ?
-          `).all(...nodeParams, graphLimit) as { id: string; label: string; confidence: string; user_id: string; category: string }[];
-
-          const nodeIds = new Set(nodes.map((n) => n.id));
+          const focusId = url.searchParams.get('focus');
+          const depth = Math.min(3, Math.max(1, parseInt(url.searchParams.get('depth') || '1', 10)));
+          const mode = url.searchParams.get('mode') || 'connected';
 
           const allLinks = db.prepare(`
             SELECT source_id, target_id, relation_type as type FROM relationships
           `).all() as { source_id: string; target_id: string; type: string }[];
 
+          const nodeSelect = `
+            SELECT m.id, SUBSTR(m.content, 1, 60) as label, m.confidence, m.user_id, m.category,
+                   m.project, m.access_count, m.content
+            FROM memories m
+          `;
+          const baseFilters = ['m.deleted_at IS NULL', 'm.superseded_at IS NULL'];
+          const baseParams: unknown[] = [];
+          if (graphProject) { baseFilters.push('m.project = ?'); baseParams.push(graphProject); }
+
+          type NodeRow = { id: string; label: string; confidence: string; user_id: string; category: string; project: string; access_count: number; content: string };
+          let nodes: NodeRow[];
+
+          if (focusId) {
+            // BFS out from the focus node across relationships, up to `depth` hops.
+            const adjacency = new Map<string, Set<string>>();
+            for (const l of allLinks) {
+              if (!adjacency.has(l.source_id)) adjacency.set(l.source_id, new Set());
+              if (!adjacency.has(l.target_id)) adjacency.set(l.target_id, new Set());
+              adjacency.get(l.source_id)!.add(l.target_id);
+              adjacency.get(l.target_id)!.add(l.source_id);
+            }
+            const keep = new Set<string>([focusId]);
+            let frontier = [focusId];
+            for (let d = 0; d < depth; d++) {
+              const next: string[] = [];
+              for (const id of frontier) {
+                for (const nb of adjacency.get(id) ?? []) {
+                  if (!keep.has(nb)) { keep.add(nb); next.push(nb); }
+                }
+              }
+              frontier = next;
+            }
+            const ids = [...keep];
+            const placeholders = ids.map(() => '?').join(',');
+            nodes = db.prepare(
+              `${nodeSelect} WHERE ${baseFilters.join(' AND ')} AND m.id IN (${placeholders}) LIMIT ?`
+            ).all(...baseParams, ...ids, graphLimit) as NodeRow[];
+          } else if (mode === 'connected') {
+            // Only nodes that participate in at least one relationship — keeps the
+            // graph meaningful instead of showing hundreds of isolated dots.
+            const connectedIds = new Set<string>();
+            for (const l of allLinks) { connectedIds.add(l.source_id); connectedIds.add(l.target_id); }
+            if (connectedIds.size === 0) {
+              nodes = [];
+            } else {
+              const ids = [...connectedIds];
+              const placeholders = ids.map(() => '?').join(',');
+              nodes = db.prepare(
+                `${nodeSelect} WHERE ${baseFilters.join(' AND ')} AND m.id IN (${placeholders})
+                 ORDER BY m.access_count DESC LIMIT ?`
+              ).all(...baseParams, ...ids, graphLimit) as NodeRow[];
+            }
+          } else {
+            // mode=all — every visible node, capped.
+            nodes = db.prepare(
+              `${nodeSelect} WHERE ${baseFilters.join(' AND ')} ORDER BY m.created_at DESC LIMIT ?`
+            ).all(...baseParams, graphLimit) as NodeRow[];
+          }
+
+          const nodeIds = new Set(nodes.map((n) => n.id));
           const links = allLinks
             .filter((l) => nodeIds.has(l.source_id) && nodeIds.has(l.target_id))
             .map((l) => ({ source: l.source_id, target: l.target_id, type: l.type }));
 
-          jsonOk(res, { nodes, links });
+          jsonOk(res, { nodes, links, mode: focusId ? 'focus' : mode, focus: focusId || null });
           return;
         }
 

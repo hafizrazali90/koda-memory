@@ -65,6 +65,41 @@ export async function vectorSearch(
 }
 
 /**
+ * Fetch a memory's stored embedding, or null if it has none.
+ */
+export function getEmbedding(db: Database.Database, memoryId: string): Float32Array | null {
+  const row = db
+    .prepare('SELECT embedding FROM memory_embeddings WHERE memory_id = ?')
+    .get(memoryId) as { embedding: Buffer } | undefined;
+  if (!row) return null;
+  const buf = row.embedding;
+  return new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+}
+
+/**
+ * Cosine similarity (0-1, higher = more similar) between two memories' stored
+ * embeddings. Returns null if either embedding is missing or dimensions differ.
+ */
+export function embeddingSimilarity(db: Database.Database, idA: string, idB: string): number | null {
+  const a = getEmbedding(db, idA);
+  const b = getEmbedding(db, idB);
+  if (!a || !b || a.length !== b.length) return null;
+
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return null;
+  const cosine = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  // Clamp to [0,1] — embeddings are normalised so cosine is ~[-1,1]; negatives → 0
+  return Math.max(0, Math.min(1, cosine));
+}
+
+/**
  * Search using a pre-computed embedding.
  */
 export function vectorSearchByEmbedding(

@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { ftsSearch } from '../search/fts.js';
 import { createRelationship } from '../search/graph.js';
+import { askYesNo } from '../llm/classifier.js';
 import type { ContradictionResult } from './types.js';
 
 const MAX_CANDIDATES = 3;
@@ -15,42 +16,14 @@ interface MemoryRow {
 }
 
 /**
- * Ask Claude Haiku whether two statements contradict each other.
- * Returns true if the model answers YES.
+ * Ask the configured LLM whether two statements contradict each other.
+ * Throws on API failure (so the job retries) — never silently returns false.
  */
 async function askLlmIsContradiction(contentA: string, contentB: string): Promise<boolean> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.warn('[contradiction-detector] OPENAI_API_KEY not set — skipping LLM contradiction check');
-    return false;
-  }
-
-  const prompt =
+  return askYesNo(
     `Statement A:\n"${contentA}"\n\nStatement B:\n"${contentB}"\n\n` +
-    `Do these two statements contradict each other? Answer YES or NO only.`;
-
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 10,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-
-    const data = (await resp.json()) as { content?: Array<{ text?: string }> };
-    const answer = data.content?.[0]?.text?.trim().toUpperCase() ?? '';
-    return answer.startsWith('YES');
-  } catch (err) {
-    console.warn('[contradiction-detector] LLM call failed:', (err as Error).message);
-    return false;
-  }
+      `Do these two statements contradict each other?`
+  );
 }
 
 /**

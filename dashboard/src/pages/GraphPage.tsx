@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { getGraph } from '../api';
+import { getGraph, getMemories } from '../api';
 import type { GraphData, GraphNode, GraphLink, Confidence, RelationType } from '../types';
 
 // Lazy-load react-force-graph-2d to avoid SSR issues
@@ -119,6 +119,10 @@ export default function GraphPage() {
   const [error, setError] = useState('');
   const [project, setProject] = useState('');
   const [projectInput, setProjectInput] = useState('');
+  const [mode, setMode] = useState<'connected' | 'all'>('connected');
+  const [focus, setFocus] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [searchMsg, setSearchMsg] = useState('');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
@@ -138,30 +142,57 @@ export default function GraphPage() {
     return () => obs.disconnect();
   }, []);
 
-  const load = useCallback(async (proj?: string) => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const data = await getGraph(proj || undefined);
+      const data = await getGraph({
+        project: project || undefined,
+        focus: focus || undefined,
+        depth: focus ? 2 : undefined,
+        mode,
+      });
       setGraph(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Load failed');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [project, focus, mode]);
 
   useEffect(() => {
-    load(project);
-  }, [project, load]);
+    load();
+  }, [load]);
 
   function handleFilterSubmit(e: React.FormEvent) {
     e.preventDefault();
     setProject(projectInput.trim());
   }
 
+  // Search-to-node: find the first memory matching the query and focus the graph on it.
+  async function handleSearchSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const q = search.trim();
+    if (!q) return;
+    setSearchMsg('Searching…');
+    try {
+      const res = await getMemories({ q, per_page: 1, project: project || undefined });
+      if (res.memories.length > 0) {
+        setSearchMsg('');
+        setFocus(res.memories[0].id);
+      } else {
+        setSearchMsg('No memory matched.');
+      }
+    } catch {
+      setSearchMsg('Search failed.');
+    }
+  }
+
+  // Click a node → focus the graph on its neighbourhood (and show its detail).
   const handleNodeClick = useCallback((node: object) => {
-    setSelectedNode(node as GraphNode);
+    const n = node as GraphNode;
+    setSelectedNode(n);
+    setFocus(n.id);
   }, []);
 
   // Prepare graph data for force-graph
@@ -175,8 +206,39 @@ export default function GraphPage() {
   return (
     <div className="flex flex-col h-full" style={{ minHeight: 'calc(100vh - 120px)' }}>
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-3 mb-3">
         <h2 className="text-2xl font-bold text-white">Knowledge Graph</h2>
+
+        {/* Mode toggle: connected (default) vs all */}
+        <div className="flex rounded-lg overflow-hidden border border-gray-600 text-sm" title="Connected = only memories with links; All = every memory">
+          {(['connected', 'all'] as const).map(m => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              disabled={!!focus}
+              className={`px-3 py-2 transition ${mode === m ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'} ${focus ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {m === 'connected' ? 'Connected' : 'All'}
+            </button>
+          ))}
+        </div>
+
+        {/* Search-to-node */}
+        <form onSubmit={handleSearchSubmit} className="flex gap-2">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Find a memory → focus..."
+            className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm
+                       placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition w-52"
+          />
+          <button type="submit" className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition">
+            Focus
+          </button>
+        </form>
+
         <form onSubmit={handleFilterSubmit} className="flex gap-2 ml-auto">
           <input
             type="text"
@@ -202,9 +264,28 @@ export default function GraphPage() {
             </button>
           )}
         </form>
+      </div>
+
+      {/* Status row: focus chip + counts */}
+      <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">
+        {focus && (
+          <span className="flex items-center gap-2 px-3 py-1 bg-indigo-900/40 border border-indigo-700 rounded-full text-indigo-200">
+            Focused on neighbourhood of <span className="font-mono text-xs">{focus.slice(0, 16)}</span>
+            <button
+              type="button"
+              onClick={() => setFocus(null)}
+              className="text-indigo-300 hover:text-white"
+              title="Show the full graph again"
+            >
+              ✕ clear focus
+            </button>
+          </span>
+        )}
+        {searchMsg && <span className="text-gray-400">{searchMsg}</span>}
         {graph && (
-          <span className="text-sm text-gray-400">
+          <span className="text-gray-400">
             {graph.nodes.length} nodes, {graph.links.length} links
+            {!focus && mode === 'connected' && ' (connected only)'}
           </span>
         )}
       </div>
@@ -232,7 +313,7 @@ export default function GraphPage() {
             <div className="bg-red-900/30 border border-red-700 rounded-xl p-6 text-red-300 text-sm max-w-md text-center">
               <strong>Error:</strong> {error}
               <br />
-              <button onClick={() => load(project)} className="mt-3 underline hover:no-underline text-sm">
+              <button onClick={() => load()} className="mt-3 underline hover:no-underline text-sm">
                 Retry
               </button>
             </div>
@@ -240,8 +321,10 @@ export default function GraphPage() {
         )}
 
         {!loading && !error && graph && graph.nodes.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-500">
-            No nodes to display{project ? ` for project "${project}"` : ''}.
+          <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-center px-6">
+            {mode === 'connected' && !focus && !project
+              ? 'No linked memories yet. Connections appear as the validation worker confirms duplicates and contradictions — switch to "All" to see every memory.'
+              : `No nodes to display${project ? ` for project "${project}"` : ''}.`}
           </div>
         )}
 

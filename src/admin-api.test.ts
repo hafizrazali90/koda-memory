@@ -106,6 +106,11 @@ beforeAll(async () => {
   // Explicitly set memId1 to 'confirmed' so confidence filter tests have data
   await memoryUpdate(db, TEST_USER, { id: memId1, confidence: 'confirmed' });
 
+  // Create a relationship so the graph 'connected' mode + focus have data
+  db.prepare(
+    "INSERT OR IGNORE INTO relationships (source_id, target_id, relation_type, created_at) VALUES (?, ?, 'relates-to', ?)"
+  ).run(memId1, memId2, new Date().toISOString());
+
   // Start the HTTP server with test credentials
   server = createHttpServer({
     userMap: new Map([[TEST_KEY, TEST_USER]]),
@@ -560,25 +565,73 @@ describe('TC-API-009: GET /admin/graph', () => {
     }
   });
 
-  it('?project= filter reduces nodes', async () => {
-    const resAll = await get('/admin/graph');
+  it('?project= filter reduces nodes (mode=all)', async () => {
+    const resAll = await get('/admin/graph', { searchParams: { mode: 'all' } });
     const jsonAll = await resAll.json() as Record<string, unknown>;
     const allCount = (jsonAll.nodes as unknown[]).length;
 
-    const resFiltered = await get('/admin/graph', { searchParams: { project: 'test-project' } });
+    const resFiltered = await get('/admin/graph', { searchParams: { mode: 'all', project: 'test-project' } });
     const jsonFiltered = await resFiltered.json() as Record<string, unknown>;
     const filteredCount = (jsonFiltered.nodes as unknown[]).length;
 
     expect(filteredCount).toBeLessThan(allCount);
   });
 
-  it('returns empty nodes on empty DB', async () => {
-    // This is a fresh empty DB scenario — but we have 3 memories, so just verify no crash
-    const res = await get('/admin/graph', { searchParams: { project: 'nonexistent-project-xyz' } });
+  it('returns empty nodes for a project with no memories', async () => {
+    const res = await get('/admin/graph', { searchParams: { project: 'nonexistent-project-xyz', mode: 'all' } });
     expect(res.status).toBe(200);
     const json = await res.json() as Record<string, unknown>;
     expect((json.nodes as unknown[]).length).toBe(0);
     expect((json.links as unknown[]).length).toBe(0);
+  });
+
+  it('connected mode (default) returns only nodes that have a relationship', async () => {
+    const res = await get('/admin/graph'); // default mode=connected
+    const json = await res.json() as Record<string, unknown>;
+    const nodes = json.nodes as { id: string }[];
+    const ids = nodes.map((n) => n.id);
+    // memId1 + memId2 are linked; memId3 is isolated → excluded in connected mode
+    expect(ids).toContain(memId1);
+    expect(ids).toContain(memId2);
+    expect(ids).not.toContain(memId3);
+    expect((json.links as unknown[]).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('mode=all includes isolated nodes', async () => {
+    const res = await get('/admin/graph', { searchParams: { mode: 'all' } });
+    const json = await res.json() as Record<string, unknown>;
+    const ids = (json.nodes as { id: string }[]).map((n) => n.id);
+    expect(ids).toContain(memId3); // isolated node now included
+  });
+
+  it('focus=<id> returns the node and its neighbours', async () => {
+    const res = await get('/admin/graph', { searchParams: { focus: memId1, depth: '1' } });
+    expect(res.status).toBe(200);
+    const json = await res.json() as Record<string, unknown>;
+    const ids = (json.nodes as { id: string }[]).map((n) => n.id);
+    expect(ids).toContain(memId1);       // the focus
+    expect(ids).toContain(memId2);       // its neighbour
+    expect(ids).not.toContain(memId3);   // unrelated → excluded
+    expect(json.mode).toBe('focus');
+    expect(json.focus).toBe(memId1);
+  });
+
+  it('focus on an isolated node returns just that node, no links', async () => {
+    const res = await get('/admin/graph', { searchParams: { focus: memId3 } });
+    const json = await res.json() as Record<string, unknown>;
+    const ids = (json.nodes as { id: string }[]).map((n) => n.id);
+    expect(ids).toEqual([memId3]);
+    expect((json.links as unknown[]).length).toBe(0);
+  });
+
+  it('graph nodes carry content + access_count for the detail panel', async () => {
+    const res = await get('/admin/graph');
+    const json = await res.json() as Record<string, unknown>;
+    for (const node of json.nodes as Record<string, unknown>[]) {
+      expect(node).toHaveProperty('content');
+      expect(node).toHaveProperty('access_count');
+      expect(node).toHaveProperty('project');
+    }
   });
 });
 

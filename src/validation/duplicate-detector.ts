@@ -1,10 +1,20 @@
 import type Database from 'better-sqlite3';
 import { ftsSearch } from '../search/fts.js';
 import { createRelationship } from '../search/graph.js';
+import { embeddingSimilarity } from '../search/vector.js';
+import { isEmbeddingAvailable } from '../embeddings/openai.js';
+import { askYesNo, isClassifierAvailable } from '../llm/classifier.js';
 import type { DuplicateResult } from './types.js';
 
 // FTS score threshold to call LLM for confirmation (normalised 0-1, higher = more similar)
 const FTS_LLM_THRESHOLD = 0.85;
+
+// Vector cosine pre-filter: only ask the LLM when the top FTS candidate is also
+// semantically close. normaliseBm25 makes the top FTS hit ~1.0 for almost any
+// memory, so without this gate we'd call the LLM for nearly every memory. The
+// embedding similarity is the cheap, reliable signal that two memories are
+// actually about the same thing.
+const VECTOR_PREFILTER_THRESHOLD = 0.85;
 
 interface MemoryRow {
   id: string;
@@ -27,41 +37,14 @@ function normaliseBm25(scores: number[]): number[] {
 }
 
 /**
- * Ask Claude Haiku whether two memory strings say the same thing.
- * Returns true if the model answers YES.
+ * Ask the configured LLM whether two memory strings say the same thing.
+ * Throws on API failure (so the job retries) — never silently returns false.
  */
 async function askLlmIsDuplicate(contentA: string, contentB: string): Promise<boolean> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return false;
-  }
-
-  const prompt =
+  return askYesNo(
     `Memory A:\n"${contentA}"\n\nMemory B:\n"${contentB}"\n\n` +
-    `Are these two memories saying the same thing? Answer YES or NO only.`;
-
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 10,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-
-    const data = (await resp.json()) as { content?: Array<{ text?: string }> };
-    const answer = data.content?.[0]?.text?.trim().toUpperCase() ?? '';
-    return answer.startsWith('YES');
-  } catch (err) {
-    console.warn('[duplicate-detector] LLM call failed:', (err as Error).message);
-    return false;
-  }
+      `Are these two memories saying the same thing?`
+  );
 }
 
 /**
@@ -70,9 +53,11 @@ async function askLlmIsDuplicate(contentA: string, contentB: string): Promise<bo
  * Strategy:
  *   1. Load the memory's content + project.
  *   2. FTS search within the same project (limit 5, exclude self).
- *   3. Normalise BM25 scores; if top score > FTS_LLM_THRESHOLD AND API key is set,
- *      confirm via Claude Haiku.  Without API key, use stricter FTS_ONLY_THRESHOLD.
- *   4. On confirmed duplicate: UPDATE memories SET duplicate_of, confidence='outdated'.
+ *   3. Vector pre-filter: require the top FTS candidate to be semantically close
+ *      (embedding cosine >= VECTOR_PREFILTER_THRESHOLD) before spending an LLM call.
+ *   4. LLM confirmation is the final gate — a duplicate is only marked on YES.
+ *   5. On confirmed duplicate: set duplicate_of + confidence='outdated' + a
+ *      'supersedes' graph edge (canonical → duplicate).
  */
 export async function detectDuplicate(
   db: Database.Database,
@@ -109,32 +94,42 @@ export async function detectDuplicate(
   const topScore = normScores[0] ?? 0;
   const topResult = ftsResults[0];
 
-  const llmAvailable = Boolean(process.env.OPENAI_API_KEY);
-
   // Decide whether we have a duplicate.
   //
-  // A duplicate is ONLY ever confirmed by the LLM. FTS rank alone is not safe:
-  // normaliseBm25 maps the best hit to ~1.0, so "top FTS score" is high for
-  // almost every memory that has any textual neighbour. Auto-marking on FTS
-  // alone wrongly flags unrelated memories as duplicates (observed 2026-06-19).
-  // Without an LLM key we record the check and leave the memory untouched.
+  // A duplicate is ONLY ever confirmed by the LLM, and only after a cheap vector
+  // pre-filter agrees the two are semantically close. FTS rank alone is unsafe
+  // (normaliseBm25 makes the top hit ~1.0 for almost any memory), which wrongly
+  // flagged 171 unrelated memories on 2026-06-19. Without an LLM provider we
+  // record the check and leave the memory untouched.
   let isDuplicate = false;
   let similarityReason: string | undefined;
 
-  if (topScore > FTS_LLM_THRESHOLD && llmAvailable) {
-    const candidate = db
-      .prepare('SELECT content FROM memories WHERE id = ? AND deleted_at IS NULL')
-      .get(topResult.id) as { content: string } | undefined;
+  if (topScore > FTS_LLM_THRESHOLD && isClassifierAvailable()) {
+    // Vector pre-filter: skip the LLM unless embeddings agree they're close.
+    // If embeddings are unavailable we can't pre-filter, so fall through to the LLM.
+    let vectorOk = true;
+    let vectorScore: number | null = null;
+    if (isEmbeddingAvailable()) {
+      vectorScore = embeddingSimilarity(db, memoryId, topResult.id);
+      vectorOk = vectorScore === null || vectorScore >= VECTOR_PREFILTER_THRESHOLD;
+    }
 
-    if (candidate) {
-      isDuplicate = await askLlmIsDuplicate(memory.content, candidate.content);
-      if (isDuplicate) {
-        similarityReason = `FTS score ${topScore.toFixed(2)} confirmed by LLM`;
+    if (vectorOk) {
+      const candidate = db
+        .prepare('SELECT content FROM memories WHERE id = ? AND deleted_at IS NULL')
+        .get(topResult.id) as { content: string } | undefined;
+
+      if (candidate) {
+        isDuplicate = await askLlmIsDuplicate(memory.content, candidate.content);
+        if (isDuplicate) {
+          const vecPart = vectorScore !== null ? `, cosine ${vectorScore.toFixed(2)}` : '';
+          similarityReason = `FTS ${topScore.toFixed(2)}${vecPart}, confirmed by LLM`;
+        }
       }
     }
-  } else if (topScore > FTS_LLM_THRESHOLD && !llmAvailable) {
+  } else if (topScore > FTS_LLM_THRESHOLD && !isClassifierAvailable()) {
     console.warn(
-      `[duplicate-detector] no LLM key — NOT auto-marking ${memoryId} (FTS ${topScore.toFixed(2)}); left for LLM-backed run`
+      `[duplicate-detector] no LLM provider — NOT auto-marking ${memoryId}; left for an LLM-backed run`
     );
   }
 

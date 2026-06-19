@@ -261,6 +261,19 @@ function runMigrations(db: Database.Database): void {
   db.prepare(
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (12, datetime('now'))"
   ).run();
+
+  // Migration 13 — validation retry backoff. next_attempt_at gates when a job
+  // becomes eligible again after a transient failure. NULL = ready now.
+  const hasNextAttempt = db.prepare(
+    "SELECT 1 FROM pragma_table_info('validation_queue') WHERE name='next_attempt_at'"
+  ).get();
+  if (!hasNextAttempt) {
+    db.exec(`ALTER TABLE validation_queue ADD COLUMN next_attempt_at TEXT;`);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (13, datetime('now'))"
+  ).run();
 }
 
 function createVectorTable(db: Database.Database): void {

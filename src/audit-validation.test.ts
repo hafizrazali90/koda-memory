@@ -19,7 +19,7 @@ import { memoryUpdate } from './tools/memory-update.js';
 import { memoryForget } from './tools/memory-forget.js';
 import { memoryFlag } from './tools/memory-flag.js';
 import { scheduleValidation, runValidationBatch, startValidationScheduler } from './validation/engine.js';
-import { getQueueDepth, enqueueValidation } from './validation/queue.js';
+import { getQueueDepth, enqueueValidation, dequeueJobs, markFailed, MAX_ATTEMPTS } from './validation/queue.js';
 import { detectDuplicate } from './validation/duplicate-detector.js';
 import type Database from 'better-sqlite3';
 
@@ -196,6 +196,59 @@ describe('Fix #1: Validation queue auto-processing', () => {
     const res = await runValidationBatch(db, USER, 10);
     expect(res.processed).toBe(1); // returns cleanly (no duplicate), marked done
     expect(getQueueDepth(db)).toBe(0);
+  });
+});
+
+describe('Fix #1b: Retry-with-backoff for failed jobs', () => {
+  it('a failed job is re-queued as pending with a future next_attempt_at', () => {
+    enqueueValidation(db, 'mem_x', 'duplicate_check');
+    const [job] = dequeueJobs(db, 1); // claim → 'processing'
+    expect(job).toBeDefined();
+
+    markFailed(db, job.id, 'transient LLM error');
+
+    const row = db.prepare('SELECT status, attempts, next_attempt_at, last_error FROM validation_queue WHERE id = ?').get(job.id) as { status: string; attempts: number; next_attempt_at: string | null; last_error: string };
+    expect(row.status).toBe('pending');        // re-queued, not dead
+    expect(row.attempts).toBe(1);
+    expect(row.last_error).toBe('transient LLM error');
+    expect(row.next_attempt_at).not.toBeNull(); // backoff set
+    expect(new Date(row.next_attempt_at!).getTime()).toBeGreaterThan(Date.now()); // in the future
+  });
+
+  it('a job in backoff is NOT claimed by dequeue until its window elapses', () => {
+    enqueueValidation(db, 'mem_y', 'duplicate_check');
+    const [job] = dequeueJobs(db, 1);
+    markFailed(db, job.id, 'err'); // sets next_attempt_at ~2 min out
+
+    // Immediately try to claim again — should get nothing (still in backoff)
+    const claimed = dequeueJobs(db, 10);
+    expect(claimed.find((j) => j.id === job.id)).toBeUndefined();
+  });
+
+  it('a job becomes claimable once next_attempt_at is in the past', () => {
+    enqueueValidation(db, 'mem_z', 'duplicate_check');
+    const [job] = dequeueJobs(db, 1);
+    markFailed(db, job.id, 'err');
+
+    // Force the backoff window into the past
+    db.prepare("UPDATE validation_queue SET next_attempt_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(job.id);
+
+    const claimed = dequeueJobs(db, 10);
+    expect(claimed.find((j) => j.id === job.id)).toBeDefined();
+  });
+
+  it('a job is dead-lettered (failed) after MAX_ATTEMPTS', () => {
+    enqueueValidation(db, 'mem_dead', 'duplicate_check');
+    const jobId = (db.prepare("SELECT id FROM validation_queue WHERE memory_id = 'mem_dead'").get() as { id: number }).id;
+
+    // Fail it MAX_ATTEMPTS times
+    for (let i = 0; i < MAX_ATTEMPTS; i++) {
+      markFailed(db, jobId, `attempt ${i}`);
+    }
+
+    const row = db.prepare('SELECT status, attempts FROM validation_queue WHERE id = ?').get(jobId) as { status: string; attempts: number };
+    expect(row.status).toBe('failed');
+    expect(row.attempts).toBe(MAX_ATTEMPTS);
   });
 });
 
