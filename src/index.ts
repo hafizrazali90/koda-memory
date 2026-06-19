@@ -1,7 +1,9 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
+import type { Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type Database from 'better-sqlite3';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -17,8 +19,9 @@ import { memoryForget } from './tools/memory-forget.js';
 import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
+import { recordAudit } from './tools/audit.js';
 import { buildUserMap, resolveUserFromToken, extractToken } from './auth.js';
-import { runValidationBatch } from './validation/engine.js';
+import { runValidationBatch, startValidationScheduler } from './validation/engine.js';
 
 // --- Config ---
 
@@ -30,11 +33,6 @@ function resolveProject(paramProject?: string): string {
 
 // Per-user API key resolution lives in ./auth.js (extracted for unit testing).
 const USER_MAP = buildUserMap();
-
-function resolveUser(req: IncomingMessage): string | null {
-  const token = extractToken(req.headers['authorization'], req.url, req.headers.host);
-  return resolveUserFromToken(USER_MAP, token);
-}
 
 // --- MCP Server factory ---
 
@@ -62,9 +60,7 @@ function createMcpServer(userId: string): McpServer {
     async (params) => {
       const db = getConnection();
       const project = resolveProject(params.project);
-      // When scope=project, store under the shared 'sifututor' namespace so all devs can read it
       const effectiveUserId = params.scope === 'project' ? 'sifututor' : userId;
-      // created_by always records the real author, even for project-scoped writes
       const result = await memoryStore(db, project, effectiveUserId, params, userId);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
@@ -368,31 +364,18 @@ interface AdminPath {
 }
 
 function parseAdminPath(pathname: string): AdminPath | null {
-  // Must start with /admin/
   if (!pathname.startsWith('/admin/') && pathname !== '/admin') return null;
 
   const rest = pathname.replace(/^\/admin\/?/, '');
   if (!rest) return null;
 
-  // /admin/stats
   if (rest === 'stats') return { route: 'stats' };
-
-  // /admin/graph
   if (rest === 'graph') return { route: 'graph' };
-
-  // /admin/validation/queue
   if (rest === 'validation/queue') return { route: 'validation-queue' };
-
-  // /admin/audit
   if (rest === 'audit') return { route: 'audit' };
-
-  // /admin/search-gaps
   if (rest === 'search-gaps') return { route: 'search-gaps' };
-
-  // /admin/memories
   if (rest === 'memories') return { route: 'memories' };
 
-  // /admin/memories/:id/action  OR  /admin/memories/:id
   const memMatch = rest.match(/^memories\/([^/]+)(?:\/([^/]+))?$/);
   if (memMatch) {
     const [, id, action] = memMatch;
@@ -423,16 +406,30 @@ function jsonErr(res: ServerResponse, message: string, status = 500): void {
   res.end(JSON.stringify({ error: message }));
 }
 
-// --- HTTP Server ---
+// --- HTTP server factory (exported for testing) ---
 
-// Streamable HTTP sessions
-const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
+/**
+ * Create the Koda HTTP server.
+ *
+ * opts.userMap  — token→userId map; defaults to USER_MAP (built from env vars)
+ * opts.dbGetter — function that returns the DB connection; defaults to getConnection()
+ *
+ * The returned server is NOT yet listening. Call server.listen(port, ...) to start it.
+ * This separation enables unit tests to start the server on an ephemeral port (listen(0))
+ * with a temp DB and a known API key, without touching the real database.
+ */
+export function createHttpServer(opts?: {
+  userMap?: Map<string, string>;
+  dbGetter?: () => Database.Database;
+}): Server {
+  const userMap = opts?.userMap ?? USER_MAP;
+  const dbGetter = opts?.dbGetter ?? getConnection;
 
-// SSE sessions (legacy — used by Claude Code "type": "sse")
-const sseTransports = new Map<string, SSEServerTransport>();
+  // Per-server session state — each createHttpServer() call gets its own maps
+  const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
+  const sseTransports = new Map<string, SSEServerTransport>();
 
-async function main() {
-  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     // Health check — no auth required
@@ -451,7 +448,13 @@ async function main() {
       try {
         const content = fs.readFileSync(fullPath);
         const ext = path.extname(fullPath);
-        const mimes: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+        const mimes: Record<string, string> = {
+          '.html': 'text/html',
+          '.js': 'application/javascript',
+          '.css': 'text/css',
+          '.svg': 'image/svg+xml',
+          '.ico': 'image/x-icon',
+        };
         res.writeHead(200, { 'Content-Type': mimes[ext] || 'application/octet-stream' });
         res.end(content);
       } catch {
@@ -468,8 +471,9 @@ async function main() {
       return;
     }
 
-    // All other routes require auth — resolveUser returns null on bad/missing token
-    const userId = resolveUser(req);
+    // All other routes require auth
+    const authToken = extractToken(req.headers['authorization'], req.url, req.headers.host);
+    const userId = resolveUserFromToken(userMap, authToken);
     if (!userId) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
@@ -477,7 +481,6 @@ async function main() {
     }
 
     // === SSE Transport (legacy) ===
-    // GET /sse — establish SSE stream
     if (url.pathname === '/sse' && req.method === 'GET') {
       const messagesPath = process.env.KODA_BASE_PATH ? `${process.env.KODA_BASE_PATH}/messages` : '/messages';
       const transport = new SSEServerTransport(messagesPath, res);
@@ -492,7 +495,6 @@ async function main() {
       return;
     }
 
-    // POST /messages — SSE message endpoint
     if (url.pathname === '/messages' && req.method === 'POST') {
       const sessionId = url.searchParams.get('sessionId');
       if (!sessionId || !sseTransports.has(sessionId)) {
@@ -561,7 +563,7 @@ async function main() {
       }
 
       try {
-        const db = getConnection();
+        const db = dbGetter();
 
         // GET /admin/stats
         if (adminPath.route === 'stats' && req.method === 'GET') {
@@ -653,7 +655,7 @@ async function main() {
           if (categoryFilter) { filters.push('m.category = ?'); params.push(categoryFilter); }
 
           const qFilter = url.searchParams.get('q');
-          if (qFilter) { filters.push("m.content LIKE ?"); params.push(`%${qFilter}%`); }
+          if (qFilter) { filters.push('m.content LIKE ?'); params.push(`%${qFilter}%`); }
 
           const flaggedFilter = url.searchParams.get('flagged');
           if (flaggedFilter === 'true') { filters.push('m.flagged_outdated_by IS NOT NULL'); }
@@ -661,11 +663,11 @@ async function main() {
 
           const supersededFilter = url.searchParams.get('superseded');
           if (supersededFilter === 'true') { filters.push('m.superseded_at IS NOT NULL'); }
-          else { filters.push('m.superseded_at IS NULL'); }  // default: exclude superseded
+          else { filters.push('m.superseded_at IS NULL'); }
 
           const deletedFilter = url.searchParams.get('deleted');
           if (deletedFilter === 'true') { filters.push('m.deleted_at IS NOT NULL'); }
-          else { filters.push('m.deleted_at IS NULL'); }  // default: exclude deleted
+          else { filters.push('m.deleted_at IS NULL'); }
 
           const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
@@ -685,7 +687,6 @@ async function main() {
             LIMIT ? OFFSET ?
           `).all(...params, limit, offset) as Record<string, unknown>[];
 
-          // Attach tags for each memory
           const withTags = memories.map((mem) => {
             const tags = (db.prepare(
               'SELECT tag FROM tags WHERE memory_id = ? ORDER BY tag'
@@ -732,6 +733,8 @@ async function main() {
             'UPDATE memories SET deleted_at = NULL, updated_at = ? WHERE id = ?'
           ).run(new Date().toISOString(), adminPath.id);
 
+          recordAudit(db, adminPath.id!, 'restore', userId, { via: 'admin' });
+
           jsonOk(res, { ok: true, id: adminPath.id });
           return;
         }
@@ -744,6 +747,8 @@ async function main() {
           db.prepare(
             'UPDATE memories SET deleted_at = ?, updated_at = ? WHERE id = ?'
           ).run(new Date().toISOString(), new Date().toISOString(), adminPath.id);
+
+          recordAudit(db, adminPath.id!, 'delete', userId, { via: 'admin' });
 
           jsonOk(res, { ok: true, id: adminPath.id });
           return;
@@ -770,7 +775,6 @@ async function main() {
 
           const nodeIds = new Set(nodes.map((n) => n.id));
 
-          // Only return links where both endpoints are in the node set
           const allLinks = db.prepare(`
             SELECT source_id, target_id, relation_type as type FROM relationships
           `).all() as { source_id: string; target_id: string; type: string }[];
@@ -851,7 +855,6 @@ async function main() {
           return;
         }
 
-        // Unmatched admin route
         jsonErr(res, 'Not Found', 404);
         return;
       } catch (err: unknown) {
@@ -864,14 +867,22 @@ async function main() {
     res.writeHead(404);
     res.end('Not Found');
   });
+}
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
+// --- Entry point ---
+
+async function main() {
+  const server = createHttpServer();
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`Koda Memory server listening on http://0.0.0.0:${PORT}`);
     console.log(`SSE endpoint: GET /sse + POST /messages`);
     console.log(`Streamable HTTP endpoint: POST /mcp`);
     console.log(`Auth: ${USER_MAP.size > 0 ? 'enabled' : 'DISABLED (no keys set — dev mode)'}`);
     console.log(`DB: ${process.env.KODA_DB_PATH || '(default: .koda/brain.db)'}`);
   });
+
+  // Drain the validation queue automatically in the background.
+  startValidationScheduler(getConnection());
 }
 
 main().catch((error) => {

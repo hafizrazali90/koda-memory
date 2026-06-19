@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { storeEmbedding } from '../search/vector.js';
+import { recordAudit } from './audit.js';
 
 export interface MemoryUpdateInput {
   id: string;
@@ -85,6 +86,8 @@ export async function memoryUpdate(
     const why = input.why ?? existing.why;
     reEmbedded = await storeEmbedding(db, input.id, content, why);
   }
+
+  recordAudit(db, input.id, 'update', userId, { fields: fieldsUpdated });
 
   return {
     id: input.id,

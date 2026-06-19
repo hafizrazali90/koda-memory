@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { recordAudit } from './audit.js';
 
 export interface MemoryFlagInput {
   id: string;
@@ -38,6 +39,7 @@ export function memoryFlag(db: Database.Database, userId: string, input: MemoryF
     db.prepare(
       'UPDATE memories SET flagged_outdated_by = NULL, flagged_outdated_at = NULL WHERE id = ?'
     ).run(input.id);
+    recordAudit(db, input.id, 'unflag', userId);
     return {
       id: input.id,
       flagged: false,
@@ -48,6 +50,8 @@ export function memoryFlag(db: Database.Database, userId: string, input: MemoryF
   db.prepare(
     'UPDATE memories SET flagged_outdated_by = ?, flagged_outdated_at = ? WHERE id = ?'
   ).run(userId, now, input.id);
+
+  recordAudit(db, input.id, 'flag', userId, input.reason ? { reason: input.reason } : undefined);
 
   return {
     id: input.id,

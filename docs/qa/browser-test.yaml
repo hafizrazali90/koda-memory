@@ -1,0 +1,641 @@
+browser_test:
+  base_url: https://koda.tutorla.tech/dashboard
+  auth:
+    primary:
+      description: "Enter API key from ecosystem.config.cjs on KVM8 — ask Hafiz if you don't have it"
+      field: "API Key input"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Koda Brain Dashboard — Manual QA Test Catalog
+# Version: 1.0 (2026-06-19)
+# Purpose: Catch UI bugs (especially blank pages) before production deploy.
+# Source: docs/qa/test-plan.md — section "Gate 3 — Dashboard UI Smoke Tests"
+# ──────────────────────────────────────────────────────────────────────────────
+# Execution notes:
+#   - Open Chrome DevTools Console BEFORE running any test
+#   - Any console.error output counts as a test failure — note it even if the page looks OK
+#   - Record: PASS / FAIL / BLOCKED + evidence (screenshot path or console error text)
+# ──────────────────────────────────────────────────────────────────────────────
+
+test_cases:
+
+  # ─────────────────────────────────────────────
+  # MODULE: AUTH — Login & Session
+  # ─────────────────────────────────────────────
+
+  - id: TC-AUTH-001
+    name: "Dashboard loads without authentication (login page renders)"
+    section: "Auth"
+    setup: "Browser with no localStorage. Not logged in."
+    steps:
+      - action: NAVIGATE
+        to: /
+      - action: SCREENSHOT
+        label: "Initial load"
+      - action: VISUAL_VERIFY
+        expect: >
+          Login page renders. An API key input field is visible.
+          A sign-in button is visible. Page title reads 'Koda Brain'.
+          No blank white page. No console errors.
+
+  - id: TC-AUTH-002
+    name: "Login page renders even when JS bundle is cache-busted"
+    section: "Auth"
+    setup: "Hard-refresh (Cmd+Shift+R / Ctrl+Shift+R) to bypass cache."
+    steps:
+      - action: NAVIGATE
+        to: /
+      - action: PRESS_KEY
+        key: "Ctrl+Shift+R"
+        label: "Hard refresh"
+      - action: SCREENSHOT
+        label: "After hard refresh"
+      - action: VISUAL_VERIFY
+        expect: >
+          Login page still renders correctly.
+          No JS load errors in console. No blank page.
+
+  - id: TC-AUTH-003
+    name: "Wrong API key shows error message (not a blank page)"
+    section: "Auth"
+    setup: "On login page."
+    steps:
+      - action: FILL
+        target: "API Key input"
+        value: "definitely-not-a-real-key-12345"
+      - action: CLICK
+        target: "Sign In button"
+      - action: SCREENSHOT
+        label: "After wrong key"
+      - action: VISUAL_VERIFY
+        expect: >
+          An error message appears on the login page (e.g. 'Unauthorized' or 'Invalid key').
+          Page does NOT go blank. Page stays on the login screen.
+          No unhandled JS exception in console.
+
+  - id: TC-AUTH-004
+    name: "Correct API key opens Overview page"
+    section: "Auth"
+    setup: "On login page. Have the valid API key ready."
+    steps:
+      - action: FILL
+        target: "API Key input"
+        value: "[YOUR API KEY — from ecosystem.config.cjs on KVM8]"
+      - action: CLICK
+        target: "Sign In button"
+      - action: SCREENSHOT
+        label: "After correct key"
+      - action: VISUAL_VERIFY
+        expect: >
+          Page navigates away from login. Overview / Stats page is visible.
+          'Total Memories' stat card shows a numeric value.
+          No blank white page. No console errors.
+          This is the PRIMARY regression guard for the 2026-06-19 blank-page incident.
+    critical: true
+
+  - id: TC-AUTH-005
+    name: "Refreshing the page while logged in stays logged in"
+    section: "Auth"
+    setup: "Already logged in (TC-AUTH-004 passed)."
+    steps:
+      - action: PRESS_KEY
+        key: "F5"
+        label: "Refresh"
+      - action: SCREENSHOT
+        label: "After refresh"
+      - action: VISUAL_VERIFY
+        expect: >
+          Page remains on the last viewed page (Overview or whichever was last open).
+          Login page does NOT appear. Stats or memories continue to load.
+          No blank page, no console errors.
+
+  - id: TC-AUTH-006
+    name: "Sign out returns to login page"
+    section: "Auth"
+    setup: "Already logged in."
+    steps:
+      - action: CLICK
+        target: "Sign Out link or button in sidebar/header"
+      - action: SCREENSHOT
+        label: "After sign out"
+      - action: VISUAL_VERIFY
+        expect: >
+          Login page appears. API key field is empty.
+          Navigating to /dashboard/ again shows the login page, not the authenticated view.
+
+  - id: TC-AUTH-007
+    name: "Direct URL access to sub-page while logged out shows login"
+    section: "Auth"
+    setup: "Logged out. Clear localStorage if needed."
+    steps:
+      - action: NAVIGATE
+        to: /#memories
+      - action: SCREENSHOT
+        label: "After direct URL access"
+      - action: VISUAL_VERIFY
+        expect: >
+          Login page appears instead of the memories page.
+          No blank page.
+
+  # ─────────────────────────────────────────────
+  # MODULE: STATS — Overview / Stats Page
+  # ─────────────────────────────────────────────
+
+  - id: TC-STATS-001
+    name: "Stats page renders all stat cards"
+    section: "Stats"
+    setup: "Logged in. On Overview page."
+    steps:
+      - action: SCREENSHOT
+        label: "Stats page"
+      - action: VISUAL_VERIFY
+        expect: >
+          Eight stat cards are visible: Total Memories, Confirmed, Inferred, Outdated,
+          Flagged, Superseded, Queue Depth, Search Gaps.
+          All cards show numeric values (not null, not undefined, not NaN).
+          No blank page, no console errors.
+    critical: true
+
+  - id: TC-STATS-002
+    name: "Stats values match API response"
+    section: "Stats"
+    setup: "Logged in. On Overview page. Have terminal access to run curl."
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          Note the 'Total Memories' number shown on the page.
+      - action: NAVIGATE
+        to: "[Run in terminal: curl -sf -H 'Authorization: Bearer KEY' https://koda.tutorla.tech/admin/stats | jq .total_memories]"
+      - action: VISUAL_VERIFY
+        expect: >
+          The number from the dashboard matches the curl output (within ±5 for live data race).
+          If the numbers differ by more than 10, investigate — could be a filter bug.
+
+  - id: TC-STATS-003
+    name: "Confidence breakdown bar renders"
+    section: "Stats"
+    setup: "Logged in. Memories exist in the DB."
+    steps:
+      - action: SCREENSHOT
+        label: "Confidence bar section"
+      - action: VISUAL_VERIFY
+        expect: >
+          A horizontal bar with colored segments (green=Confirmed, yellow=Inferred, red=Outdated) is visible.
+          Each segment is labelled with a percentage.
+          If all memories are confirmed, only a green bar segment appears (not a crash or empty div).
+
+  - id: TC-STATS-004
+    name: "Top Users / Top Projects / Top Categories bar charts render"
+    section: "Stats"
+    setup: "Logged in."
+    steps:
+      - action: SCREENSHOT
+        label: "Bar charts"
+      - action: VISUAL_VERIFY
+        expect: >
+          Three bar charts visible: Top Users, Top Projects, Top Categories.
+          Each shows horizontal bars with labels and counts.
+          If a chart has no data, it shows 'No data yet' (not a crash or blank section).
+
+  - id: TC-STATS-005
+    name: "Auto-refresh indicator is visible"
+    section: "Stats"
+    setup: "Logged in. On Overview page."
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          A 'Last refreshed HH:MM:SS — auto-refreshes every 30s' label is visible below the page title.
+          A Refresh button is visible in the top-right of the Overview section.
+
+  - id: TC-STATS-006
+    name: "Manual Refresh button updates stats"
+    section: "Stats"
+    setup: "Logged in. On Overview page."
+    steps:
+      - action: CLICK
+        target: "Refresh button"
+      - action: SCREENSHOT
+        label: "After manual refresh"
+      - action: VISUAL_VERIFY
+        expect: >
+          Stats reload. 'Last refreshed' timestamp updates.
+          No blank page. No loading spinner stuck.
+
+  - id: TC-STATS-007
+    name: "Stats page handles API error gracefully"
+    section: "Stats"
+    setup: "Logged in. Simulate network error (DevTools → Network → Offline)."
+    automatable: false
+    blocked_reason: "Requires DevTools network throttling — manual simulation needed"
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          When the API call fails, an error message is shown on the Stats page
+          (e.g. 'Failed to load stats' with a Retry button).
+          No blank white page. No silent failure.
+
+  # ─────────────────────────────────────────────
+  # MODULE: MEM — Memories Page
+  # ─────────────────────────────────────────────
+
+  - id: TC-MEM-001
+    name: "Memories page loads and shows memory rows"
+    section: "Memories"
+    setup: "Logged in."
+    steps:
+      - action: CLICK
+        target: "Memories link in sidebar"
+      - action: SCREENSHOT
+        label: "Memories page"
+      - action: VISUAL_VERIFY
+        expect: >
+          Memory rows are visible in a table or list.
+          Each row shows: short content preview, category badge, confidence badge, date.
+          If no memories exist, an empty-state message appears (not a blank page).
+          No console errors.
+    critical: true
+
+  - id: TC-MEM-002
+    name: "Pagination controls work"
+    section: "Memories"
+    setup: "Logged in. More than 20 memories in the DB."
+    steps:
+      - action: VISUAL_VERIFY
+        expect: "Pagination shows 'Page X of Y'."
+      - action: CLICK
+        target: "Next page button"
+      - action: SCREENSHOT
+        label: "Page 2"
+      - action: VISUAL_VERIFY
+        expect: >
+          Page 2 loads with different memories.
+          'Previous page' button is now active.
+          No blank page.
+
+  - id: TC-MEM-003
+    name: "Filter by project works"
+    section: "Memories"
+    setup: "Logged in. Multiple projects exist."
+    steps:
+      - action: FILL
+        target: "Project filter input (if present)"
+        value: "sifu-tutor"
+      - action: SCREENSHOT
+        label: "Filtered by project"
+      - action: VISUAL_VERIFY
+        expect: >
+          Only memories tagged with the 'sifu-tutor' project are shown.
+          Count in pagination reflects filtered total.
+
+  - id: TC-MEM-004
+    name: "Search filter works"
+    section: "Memories"
+    setup: "Logged in."
+    steps:
+      - action: FILL
+        target: "Search / filter input"
+        value: "deploy"
+      - action: SCREENSHOT
+        label: "Filtered by keyword"
+      - action: VISUAL_VERIFY
+        expect: >
+          Only memories containing 'deploy' appear.
+          If no match: empty-state message, not a blank page.
+          Clearing the filter restores all memories.
+
+  - id: TC-MEM-005
+    name: "Filter by confidence level"
+    section: "Memories"
+    setup: "Logged in. Memories with different confidence levels exist."
+    steps:
+      - action: CLICK
+        target: "Confidence filter dropdown (if present) → select 'outdated'"
+      - action: SCREENSHOT
+        label: "Filtered by confidence"
+      - action: VISUAL_VERIFY
+        expect: >
+          Only outdated-confidence memories shown.
+          If no outdated memories exist: 'No memories' (not a crash).
+
+  - id: TC-MEM-006
+    name: "Memory row click opens detail view"
+    section: "Memories"
+    setup: "Logged in. At least one memory exists."
+    steps:
+      - action: CLICK
+        target: "Any memory row"
+      - action: SCREENSHOT
+        label: "Memory detail"
+      - action: VISUAL_VERIFY
+        expect: >
+          Detail view opens (modal or new page).
+          Full memory content visible (not truncated at 200 chars).
+          Metadata visible: category, confidence, tags, created_at, why (if set).
+          Relations section visible (even if empty).
+          No console errors.
+    critical: true
+
+  - id: TC-MEM-007
+    name: "Memory detail shows tags correctly"
+    section: "Memories"
+    setup: "Logged in. Open a memory with known tags."
+    steps:
+      - action: SCREENSHOT
+        label: "Memory tags"
+      - action: VISUAL_VERIFY
+        expect: >
+          Tags are displayed as individual chips/badges.
+          No raw JSON strings like '["sifu-tutor","sims"]' visible.
+
+  - id: TC-MEM-008
+    name: "Memory detail shows relations"
+    section: "Memories"
+    setup: "Logged in. Open a memory that has at least one relationship (e.g. supersedes or relates-to)."
+    steps:
+      - action: SCREENSHOT
+        label: "Memory relations"
+      - action: VISUAL_VERIFY
+        expect: >
+          Relations are listed with: relation type, direction (incoming/outgoing), linked memory content.
+          Clicking on a related memory navigates to that memory's detail.
+          If no relations: 'No relations' message (not a crash).
+
+  - id: TC-MEM-009
+    name: "Soft-deleted memories hidden by default"
+    section: "Memories"
+    setup: "Logged in. At least one memory has been soft-deleted via the Admin API."
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          Deleted memories do NOT appear in the default memories list.
+          Total count excludes deleted memories.
+
+  # ─────────────────────────────────────────────
+  # MODULE: GRAPH — Knowledge Graph
+  # ─────────────────────────────────────────────
+
+  - id: TC-GRAPH-001
+    name: "Graph page renders (canvas visible)"
+    section: "Graph"
+    setup: "Logged in."
+    steps:
+      - action: CLICK
+        target: "Graph link in sidebar"
+      - action: SCREENSHOT
+        label: "Graph page"
+      - action: VISUAL_VERIFY
+        expect: >
+          A canvas element renders in the graph area.
+          If memories with relationships exist: nodes and edges are visible.
+          If no relationships exist: empty canvas or 'No data' message (not a JS crash).
+          No unhandled exception from react-force-graph-2d in console.
+    critical: true
+
+  - id: TC-GRAPH-002
+    name: "Graph page does not crash with 0 nodes"
+    section: "Graph"
+    setup: "Logged in. No relationships exist (or no memories at all)."
+    steps:
+      - action: NAVIGATE
+        to: /#graph
+      - action: SCREENSHOT
+        label: "Empty graph"
+      - action: VISUAL_VERIFY
+        expect: >
+          Page renders without crashing. Shows empty graph or 'No data'.
+          No ReferenceError or TypeError in console.
+
+  - id: TC-GRAPH-003
+    name: "Graph nodes are clickable and show memory detail"
+    section: "Graph"
+    setup: "Logged in. Relationships exist so nodes are visible."
+    automatable: false
+    blocked_reason: "Requires canvas interaction — automated click on force-graph node is unreliable"
+    steps:
+      - action: CLICK
+        target: "Any visible node on the graph canvas"
+      - action: VISUAL_VERIFY
+        expect: >
+          Clicking a node either highlights it or opens a detail panel/tooltip.
+          No console error on node click.
+
+  # ─────────────────────────────────────────────
+  # MODULE: VAL — Validation Queue
+  # ─────────────────────────────────────────────
+
+  - id: TC-VAL-001
+    name: "Validation page renders queue stats"
+    section: "Validation"
+    setup: "Logged in."
+    steps:
+      - action: CLICK
+        target: "Validation link in sidebar"
+      - action: SCREENSHOT
+        label: "Validation page"
+      - action: VISUAL_VERIFY
+        expect: >
+          Queue depth stats visible: Pending, Processing, Done, Failed counts.
+          'Run Batch' button visible and enabled.
+          No blank page. No console errors.
+
+  - id: TC-VAL-002
+    name: "Run Batch button triggers validation and shows result"
+    section: "Validation"
+    setup: "Logged in. On Validation page."
+    steps:
+      - action: CLICK
+        target: "Run Batch button"
+      - action: SCREENSHOT
+        label: "After run batch"
+      - action: VISUAL_VERIFY
+        expect: >
+          A result or status message appears (e.g. 'Processed X jobs').
+          Queue stats update.
+          No blank page, no 500 error shown to user.
+
+  - id: TC-VAL-003
+    name: "Validation page handles empty queue gracefully"
+    section: "Validation"
+    setup: "Logged in. Queue is empty (no pending jobs)."
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          Pending=0 is shown. 'Run Batch' button is visible (not hidden or disabled).
+          Clicking 'Run Batch' with empty queue shows '0 processed' or similar (not a crash).
+
+  # ─────────────────────────────────────────────
+  # MODULE: AUDIT — Audit Log
+  # ─────────────────────────────────────────────
+
+  - id: TC-AUDIT-001
+    name: "Audit log page renders entries"
+    section: "Audit"
+    setup: "Logged in."
+    steps:
+      - action: CLICK
+        target: "Audit link in sidebar"
+      - action: SCREENSHOT
+        label: "Audit page"
+      - action: VISUAL_VERIFY
+        expect: >
+          Audit entries listed in a table.
+          Each entry shows: timestamp, action, actor, memory_id.
+          If no entries: 'No audit entries' message (not a blank page or crash).
+          No console errors.
+
+  - id: TC-AUDIT-002
+    name: "Audit entry payload is displayed (not raw JSON)"
+    section: "Audit"
+    setup: "Logged in. At least one audit entry with a payload exists."
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          Payload is rendered in a readable way (expanded JSON viewer or formatted text).
+          NOT shown as a raw string like '{"before":{"confidence":"inferred"}}'.
+
+  # ─────────────────────────────────────────────
+  # MODULE: NAV — Navigation & Layout
+  # ─────────────────────────────────────────────
+
+  - id: TC-NAV-001
+    name: "Sidebar navigation highlights active page"
+    section: "Navigation"
+    setup: "Logged in."
+    steps:
+      - action: CLICK
+        target: "Memories link in sidebar"
+      - action: SCREENSHOT
+        label: "Memories active"
+      - action: VISUAL_VERIFY
+        expect: "Memories link is highlighted/active in the sidebar. Overview link is not highlighted."
+      - action: CLICK
+        target: "Validation link in sidebar"
+      - action: SCREENSHOT
+        label: "Validation active"
+      - action: VISUAL_VERIFY
+        expect: "Validation link is highlighted/active. Memories link is no longer highlighted."
+
+  - id: TC-NAV-002
+    name: "Back button / browser history works with hash routing"
+    section: "Navigation"
+    setup: "Logged in. Navigate: Overview → Memories → Graph."
+    steps:
+      - action: CLICK
+        target: "Memories link"
+      - action: CLICK
+        target: "Graph link"
+      - action: PRESS_KEY
+        key: "Alt+Left (browser back)"
+      - action: SCREENSHOT
+        label: "After back"
+      - action: VISUAL_VERIFY
+        expect: >
+          Browser back returns to Memories page.
+          Page renders correctly (not blank).
+
+  - id: TC-NAV-003
+    name: "All sidebar pages navigate without blank screen"
+    section: "Navigation"
+    setup: "Logged in."
+    steps:
+      - action: CLICK
+        target: "Overview link"
+      - action: VISUAL_VERIFY
+        expect: "Overview page renders."
+      - action: CLICK
+        target: "Memories link"
+      - action: VISUAL_VERIFY
+        expect: "Memories page renders."
+      - action: CLICK
+        target: "Graph link"
+      - action: VISUAL_VERIFY
+        expect: "Graph page renders."
+      - action: CLICK
+        target: "Validation link"
+      - action: VISUAL_VERIFY
+        expect: "Validation page renders."
+      - action: CLICK
+        target: "Audit link"
+      - action: VISUAL_VERIFY
+        expect: "Audit page renders."
+      - action: SCREENSHOT
+        label: "Final page visited"
+      - action: VISUAL_VERIFY
+        expect: >
+          NONE of the 5 page transitions resulted in a blank white screen.
+          Zero console.error calls during any transition.
+    critical: true
+
+  # ─────────────────────────────────────────────
+  # MODULE: PERF — Performance
+  # ─────────────────────────────────────────────
+
+  - id: TC-PERF-001
+    name: "Dashboard initial page load under 3s"
+    section: "Performance"
+    setup: "Clear cache. Load /dashboard/ for the first time."
+    automatable: false
+    blocked_reason: "Requires Lighthouse or Chrome performance panel — manual measurement"
+    steps:
+      - action: NAVIGATE
+        to: /
+      - action: VISUAL_VERIFY
+        expect: >
+          Login page becomes interactive in under 3 seconds.
+          Check Network tab: main JS bundle loaded successfully.
+          No resource taking >1s to load.
+
+  - id: TC-PERF-002
+    name: "Stats page renders within 2s after login"
+    section: "Performance"
+    setup: "On login page. Have valid key ready."
+    steps:
+      - action: FILL
+        target: "API Key input"
+        value: "[VALID KEY]"
+      - action: CLICK
+        target: "Sign In button"
+      - action: VISUAL_VERIFY
+        expect: >
+          Stats page appears and shows data within 2 seconds of clicking Sign In.
+          Stat cards do not show loading spinners for more than 2s.
+
+  # ─────────────────────────────────────────────
+  # MODULE: ERR — Error Handling
+  # ─────────────────────────────────────────────
+
+  - id: TC-ERR-001
+    name: "API error on Stats page shows error state (not blank)"
+    section: "Error Handling"
+    automatable: false
+    blocked_reason: "Requires simulating API failure via DevTools network block"
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          When /admin/stats returns an error, Stats page shows 'Error: ...' message
+          with a Retry button. NOT a blank white screen.
+
+  - id: TC-ERR-002
+    name: "API error on Memories page shows error state (not blank)"
+    section: "Error Handling"
+    automatable: false
+    blocked_reason: "Requires simulating API failure via DevTools network block"
+    steps:
+      - action: VISUAL_VERIFY
+        expect: >
+          When /admin/memories returns an error, Memories page shows 'Error: ...' message.
+          NOT a blank white screen.
+
+  - id: TC-ERR-003
+    name: "Unknown hash route shows a safe fallback (not blank)"
+    section: "Error Handling"
+    setup: "Logged in."
+    steps:
+      - action: NAVIGATE
+        to: /#nonexistent-page-xyz
+      - action: SCREENSHOT
+        label: "Unknown hash"
+      - action: VISUAL_VERIFY
+        expect: >
+          App shows a safe fallback (e.g. Overview page or '404' message).
+          NOT a blank white page. No console errors from router.

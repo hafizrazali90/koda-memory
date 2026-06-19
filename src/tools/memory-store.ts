@@ -4,6 +4,7 @@ import { storeEmbedding, vectorSearchByEmbedding } from '../search/vector.js';
 import { generateEmbedding, isEmbeddingAvailable } from '../embeddings/openai.js';
 import { processMemory, isProcessorAvailable } from '../llm/processor.js';
 import { scheduleValidation } from '../validation/engine.js';
+import { recordAudit } from './audit.js';
 
 export interface MemoryStoreInput {
   content: string;
@@ -169,7 +170,14 @@ export async function memoryStore(
     result.similar_existing = similar;
   }
 
-  // Step 5 — schedule async validation (fire-and-forget, must never block the response)
+  // Step 5 — record the create in the audit log (real author, not shared namespace)
+  recordAudit(db, id, 'create', createdBy ?? userId, {
+    category: finalInput.category,
+    project,
+    tags: finalInput.tags ?? [],
+  });
+
+  // Step 6 — schedule async validation (fire-and-forget, must never block the response)
   try {
     scheduleValidation(db, id, userId);
   } catch {

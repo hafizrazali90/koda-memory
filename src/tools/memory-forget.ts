@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { recordAudit } from './audit.js';
 
 export interface MemoryForgetResult {
   id: string;
@@ -21,6 +22,9 @@ export function memoryForget(db: Database.Database, userId: string, id: string):
     db.prepare('DELETE FROM relationships WHERE source_id = ? OR target_id = ?').run(id, id);
     db.prepare('DELETE FROM memories WHERE id = ?').run(id);
   })();
+
+  // audit_log has no FK to memories, so this record survives the hard delete
+  recordAudit(db, id, 'delete', userId);
 
   return {
     id,

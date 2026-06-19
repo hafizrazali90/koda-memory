@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { ftsSearch } from '../search/fts.js';
+import { createRelationship } from '../search/graph.js';
 import type { DuplicateResult } from './types.js';
 
 // FTS score threshold to call LLM for confirmation (normalised 0-1, higher = more similar)
@@ -145,6 +146,15 @@ export async function detectDuplicate(
       SET duplicate_of = ?, confidence = 'outdated', validation_checked_at = ?
       WHERE id = ? AND deleted_at IS NULL
     `).run(topResult.id, now, memoryId);
+
+    // Record the dedup in the graph: the canonical memory supersedes the duplicate.
+    // This makes deduplication visible as a link on the knowledge-graph view
+    // (createRelationship is idempotent via INSERT OR IGNORE).
+    try {
+      createRelationship(db, topResult.id, memoryId, 'supersedes');
+    } catch {
+      // Relationship may already exist — not fatal
+    }
 
     return {
       is_duplicate: true,
