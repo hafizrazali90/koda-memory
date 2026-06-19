@@ -52,6 +52,12 @@ async function main() {
   const bakCount = (bak.prepare('SELECT COUNT(*) c FROM memories').get() as { c: number }).c;
   bak.close();
 
+  // The verify-open creates empty -wal/-shm sidecars; remove them so each backup
+  // is a single self-contained .db file.
+  for (const sidecar of [`${dest}-wal`, `${dest}-shm`]) {
+    try { fs.unlinkSync(sidecar); } catch { /* not present — fine */ }
+  }
+
   if (bakCount !== srcCount) {
     console.error(`BACKUP FAILED verification: source has ${srcCount} memories, backup has ${bakCount}. Removing bad backup.`);
     try { fs.unlinkSync(dest); } catch { /* ignore */ }
@@ -68,7 +74,10 @@ async function main() {
     .sort(); // ISO timestamps sort chronologically
   const stale = files.slice(0, Math.max(0, files.length - keep));
   for (const f of stale) {
-    fs.unlinkSync(path.join(backupDir, f));
+    const base = path.join(backupDir, f);
+    for (const p of [base, `${base}-wal`, `${base}-shm`]) {
+      try { fs.unlinkSync(p); } catch { /* sidecar may not exist */ }
+    }
     console.log(`  pruned old backup: ${f}`);
   }
   console.log(`Retention: ${Math.min(files.length, keep)} backups kept (max ${keep}).`);
