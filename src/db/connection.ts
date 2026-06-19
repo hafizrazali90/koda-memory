@@ -131,6 +131,136 @@ function runMigrations(db: Database.Database): void {
   db.prepare(
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))"
   ).run();
+
+  // Migration 6 — soft delete: allows marking memories deleted without losing history.
+  // deleted_at IS NULL in all queries to exclude soft-deleted rows from search/recall.
+  const hasDeletedAt = db.prepare(
+    "SELECT 1 FROM pragma_table_info('memories') WHERE name='deleted_at'"
+  ).get();
+  if (!hasDeletedAt) {
+    db.exec(`ALTER TABLE memories ADD COLUMN deleted_at TEXT;`);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (6, datetime('now'))"
+  ).run();
+
+  // Migration 7 — embedding model version: tracks which model generated each embedding
+  // so we can detect and re-embed when the model changes (e.g. small → large).
+  const hasEmbeddingModel = db.prepare(
+    "SELECT 1 FROM pragma_table_info('memories') WHERE name='embedding_model'"
+  ).get();
+  if (!hasEmbeddingModel) {
+    db.exec(`ALTER TABLE memories ADD COLUMN embedding_model TEXT DEFAULT 'text-embedding-3-small';`);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (7, datetime('now'))"
+  ).run();
+
+  // Migration 8 — composite index for the most common query pattern: per-user per-project
+  // memory lookups. Speeds up memory_search, memory_context, and session_start.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_memories_user_project ON memories(user_id, project);
+  `);
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (8, datetime('now'))"
+  ).run();
+
+  // Migration 9 — conflict tracking fields for the validation engine.
+  // conflicts_with: comma-separated IDs of memories that contradict this one.
+  // duplicate_of: ID of the canonical memory this one duplicates.
+  // validation_checked_at: last time the validation pipeline processed this memory.
+  const hasConflictsWith = db.prepare(
+    "SELECT 1 FROM pragma_table_info('memories') WHERE name='conflicts_with'"
+  ).get();
+  if (!hasConflictsWith) {
+    db.exec(`
+      ALTER TABLE memories ADD COLUMN conflicts_with TEXT;
+      ALTER TABLE memories ADD COLUMN duplicate_of TEXT;
+      ALTER TABLE memories ADD COLUMN validation_checked_at TEXT;
+    `);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (9, datetime('now'))"
+  ).run();
+
+  // Migration 10 — audit_log: append-only record of all mutations to memories.
+  // Used by the dashboard to show history and by the validation engine for provenance.
+  const hasAuditLog = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'"
+  ).get();
+  if (!hasAuditLog) {
+    db.exec(`
+      CREATE TABLE audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        payload TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_memory ON audit_log(memory_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor);
+    `);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (10, datetime('now'))"
+  ).run();
+
+  // Migration 11 — validation_queue: async job queue for the background validation
+  // pipeline (duplicate detection, contradiction detection, confidence propagation).
+  // Status: pending → processing → done | failed.
+  const hasValidationQueue = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='validation_queue'"
+  ).get();
+  if (!hasValidationQueue) {
+    db.exec(`
+      CREATE TABLE validation_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id TEXT NOT NULL,
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        processed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_vq_status ON validation_queue(status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_vq_memory ON validation_queue(memory_id);
+    `);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (11, datetime('now'))"
+  ).run();
+
+  // Migration 12 — search_gaps: tracks queries that returned low-quality results
+  // so the dashboard can surface "coverage holes" — topics the brain doesn't know well.
+  const hasSearchGaps = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='search_gaps'"
+  ).get();
+  if (!hasSearchGaps) {
+    db.exec(`
+      CREATE TABLE search_gaps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        query TEXT NOT NULL,
+        result_count INTEGER NOT NULL,
+        top_score REAL,
+        user_id TEXT,
+        project TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_sg_project ON search_gaps(project, created_at);
+    `);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (12, datetime('now'))"
+  ).run();
 }
 
 function createVectorTable(db: Database.Database): void {

@@ -13,16 +13,26 @@ export interface MemoryRelateResult {
   superseded?: string;
 }
 
-export function memoryRelate(db: Database.Database, input: MemoryRelateInput): MemoryRelateResult {
-  // Validate both memories exist
-  const source = db.prepare('SELECT id FROM memories WHERE id = ?').get(input.source_id);
+export function memoryRelate(db: Database.Database, userId: string, input: MemoryRelateInput): MemoryRelateResult {
+  // Visibility filter: caller can see their own memories + shared + project-scoped
+  const VISIBLE = `id = ? AND (user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')`;
+
+  const source = db.prepare(`SELECT id, user_id FROM memories WHERE ${VISIBLE}`).get(input.source_id, userId) as { id: string; user_id: string } | undefined;
   if (!source) {
-    throw new Error(`Memory ${input.source_id} not found`);
+    throw new Error(`Memory ${input.source_id} not found or not visible`);
   }
 
-  const target = db.prepare('SELECT id FROM memories WHERE id = ?').get(input.target_id);
+  const target = db.prepare(`SELECT id, user_id FROM memories WHERE ${VISIBLE}`).get(input.target_id, userId) as { id: string; user_id: string } | undefined;
   if (!target) {
-    throw new Error(`Memory ${input.target_id} not found`);
+    throw new Error(`Memory ${input.target_id} not found or not visible`);
+  }
+
+  // supersedes marks the target as invalidated — caller must own it unless it's a shared/project memory
+  if (input.relation_type === 'supersedes') {
+    const targetIsPersonal = target.user_id !== 'shared' && target.user_id !== 'sifututor';
+    if (targetIsPersonal && target.user_id !== userId) {
+      throw new Error(`Cannot supersede memory ${input.target_id}: owned by another user`);
+    }
   }
 
   createRelationship(db, input.source_id, input.target_id, input.relation_type);

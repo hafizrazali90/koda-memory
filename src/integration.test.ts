@@ -80,23 +80,23 @@ describe('Koda Memory - Full Integration Test', () => {
   // ── memory_recall ──
 
   it('recalls a memory by ID with access tracking', () => {
-    const memory = memoryRecall(db, id.sims);
+    const memory = memoryRecall(db, USER, id.sims);
     expect(memory).not.toBeNull();
     expect(memory!.content).toContain('SIMS MySQL');
     expect(memory!.tags).toContain('sims');
     expect(memory!.access_count).toBe(1);
 
-    const memory2 = memoryRecall(db, id.sims);
+    const memory2 = memoryRecall(db, USER, id.sims);
     expect(memory2!.access_count).toBe(2);
   });
 
   it('records created_by provenance', () => {
-    const memory = memoryRecall(db, id.sims);
+    const memory = memoryRecall(db, USER, id.sims);
     expect(memory!.created_by).toBe(USER);
   });
 
   it('returns null for non-existent memory', () => {
-    expect(memoryRecall(db, 'mem_doesnotexist')).toBeNull();
+    expect(memoryRecall(db, USER, 'mem_doesnotexist')).toBeNull();
   });
 
   // ── memory_search (FTS5) ──
@@ -134,19 +134,19 @@ describe('Koda Memory - Full Integration Test', () => {
   // ── memory_relate (Graph) ──
 
   it('creates relationships between memories', () => {
-    const result = memoryRelate(db, { source_id: id.sims, target_id: id.drizzle, relation_type: 'relates-to' });
+    const result = memoryRelate(db, USER, { source_id: id.sims, target_id: id.drizzle, relation_type: 'relates-to' });
     expect(result.bidirectional).toBe(true);
     expect(result.message).toContain('relates-to');
   });
 
   it('creates directional relationships', () => {
-    const result = memoryRelate(db, { source_id: id.drizzle, target_id: id.naming, relation_type: 'depends-on' });
+    const result = memoryRelate(db, USER, { source_id: id.drizzle, target_id: id.naming, relation_type: 'depends-on' });
     expect(result.bidirectional).toBe(false);
   });
 
   it('rejects relationships with non-existent memories', () => {
     expect(() =>
-      memoryRelate(db, { source_id: id.sims, target_id: 'mem_nope', relation_type: 'relates-to' })
+      memoryRelate(db, USER, { source_id: id.sims, target_id: 'mem_nope', relation_type: 'relates-to' })
     ).toThrow('not found');
   });
 
@@ -187,14 +187,14 @@ describe('Koda Memory - Full Integration Test', () => {
   });
 
   it('setting confidence stamps human_reviewed_at', () => {
-    const memory = memoryRecall(db, id.qa);
+    const memory = memoryRecall(db, USER, id.qa);
     expect(memory!.human_reviewed_at).not.toBeNull();
   });
 
   it('updates tags', async () => {
     const result = await memoryUpdate(db, USER, { id: id.qa, tags: ['testing', 'workflow', 'lint', 'qa'] });
     expect(result.fields_updated).toContain('tags');
-    const recalled = memoryRecall(db, id.qa);
+    const recalled = memoryRecall(db, USER, id.qa);
     expect(recalled!.tags).toContain('lint');
     expect(recalled!.tags).toContain('qa');
   });
@@ -210,10 +210,10 @@ describe('Koda Memory - Full Integration Test', () => {
   // ── memory_forget ──
 
   it('removes a memory and all associated data', () => {
-    expect(memoryRecall(db, id.admin)).not.toBeNull();
+    expect(memoryRecall(db, USER, id.admin)).not.toBeNull();
     const result = memoryForget(db, USER, id.admin);
     expect(result.message).toContain('Removed');
-    expect(memoryRecall(db, id.admin)).toBeNull();
+    expect(memoryRecall(db, USER, id.admin)).toBeNull();
     expect(db.prepare('SELECT * FROM tags WHERE memory_id = ?').all(id.admin).length).toBe(0);
     expect(db.prepare('SELECT * FROM memories_fts WHERE id = ?').all(id.admin).length).toBe(0);
   });
@@ -236,18 +236,18 @@ describe('Koda Memory - Full Integration Test', () => {
 
   it('ends a session with summary', () => {
     const start = sessionStart(db, project, USER);
-    const result = sessionEnd(db, start.session_id, 'Built payment dashboard', 'feat/payments', 3);
+    const result = sessionEnd(db, USER, start.session_id, 'Built payment dashboard', 'feat/payments', 3);
     expect(result.message).toContain('Built payment dashboard');
   });
 
   it('lists sessions', () => {
-    const result = sessionList(db, project);
+    const result = sessionList(db, project, undefined, USER);
     expect(result.sessions.length).toBeGreaterThanOrEqual(2);
     expect(result.sessions.map((s) => s.summary)).toContain('Built payment dashboard');
   });
 
   it('rejects ending non-existent session', () => {
-    expect(() => sessionEnd(db, 'ses_fake', 'test')).toThrow('not found');
+    expect(() => sessionEnd(db, USER, 'ses_fake', 'test')).toThrow('not found');
   });
 
   // ── Health Check ──
@@ -331,7 +331,7 @@ describe('Koda Memory - Scope & isolation', () => {
   });
 
   it('project memory records the real author in created_by', () => {
-    const mem = memoryRecall(db, id.project);
+    const mem = memoryRecall(db, 'alice', id.project);
     expect(mem!.created_by).toBe('alice');
   });
 
@@ -371,7 +371,7 @@ describe('Koda Memory - flag as outdated', () => {
   });
 
   it('flagging does not change confidence or delete the memory', () => {
-    const mem = memoryRecall(db, projectId);
+    const mem = memoryRecall(db, 'alice', projectId);
     expect(mem).not.toBeNull();
     expect(mem!.confidence).not.toBe('outdated');
     expect(mem!.flagged_outdated_by).toBe('bob');
@@ -412,9 +412,9 @@ describe('Koda Memory - supersession', () => {
   });
 
   it('relate supersedes end-dates the target', () => {
-    const result = memoryRelate(db, { source_id: newId, target_id: oldId, relation_type: 'supersedes' });
+    const result = memoryRelate(db, 'alice', { source_id: newId, target_id: oldId, relation_type: 'supersedes' });
     expect(result.superseded).toBe(oldId);
-    const mem = memoryRecall(db, oldId);
+    const mem = memoryRecall(db, 'alice', oldId);
     expect(mem!.superseded_at).not.toBeNull();
     expect(mem!.confidence).toBe('outdated');
   });
@@ -427,7 +427,7 @@ describe('Koda Memory - supersession', () => {
   });
 
   it('superseded memory is still retrievable by id', () => {
-    expect(memoryRecall(db, oldId)).not.toBeNull();
+    expect(memoryRecall(db, 'alice', oldId)).not.toBeNull();
   });
 
   it('health reports superseded_count', () => {
@@ -445,7 +445,7 @@ describe('Koda Memory - migration idempotency', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('re-opening the same DB re-runs migrations without error and stays at version 5', () => {
+  it('re-opening the same DB re-runs migrations without error and stays at version 12', () => {
     const db1 = openDatabase({ dbPath });
     const v1 = (db1.prepare('SELECT MAX(version) as v FROM schema_version').get() as { v: number }).v;
     db1.close();
@@ -455,8 +455,8 @@ describe('Koda Memory - migration idempotency', () => {
     const v2 = (db2.prepare('SELECT MAX(version) as v FROM schema_version').get() as { v: number }).v;
     db2.close();
 
-    expect(v1).toBe(5);
-    expect(v2).toBe(5);
+    expect(v1).toBe(12);
+    expect(v2).toBe(12);
   });
 });
 

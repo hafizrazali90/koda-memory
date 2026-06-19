@@ -78,7 +78,7 @@ function createMcpServer(userId: string): McpServer {
     },
     async (params) => {
       const db = getConnection();
-      const memory = memoryRecall(db, params.id);
+      const memory = memoryRecall(db, userId, params.id);
       if (!memory) {
         return {
           content: [{ type: 'text' as const, text: `Memory ${params.id} not found` }],
@@ -142,7 +142,7 @@ function createMcpServer(userId: string): McpServer {
     async (params) => {
       try {
         const db = getConnection();
-        const result = memoryRelate(db, params);
+        const result = memoryRelate(db, userId, params);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };
@@ -279,7 +279,7 @@ function createMcpServer(userId: string): McpServer {
     async (params) => {
       try {
         const db = getConnection();
-        const result = sessionEnd(db, params.session_id, params.summary, params.branch, params.commit_count);
+        const result = sessionEnd(db, userId, params.session_id, params.summary, params.branch, params.commit_count);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };
@@ -303,7 +303,7 @@ function createMcpServer(userId: string): McpServer {
     async (params) => {
       const db = getConnection();
       const project = resolveProject(params.project);
-      const result = sessionList(db, project, params.limit);
+      const result = sessionList(db, project, params.limit, userId);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };

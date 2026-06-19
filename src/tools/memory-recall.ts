@@ -20,9 +20,11 @@ export interface MemoryEntry {
   superseded_at: string | null;
 }
 
-export function memoryRecall(db: Database.Database, id: string): MemoryEntry | null {
-  // Check existence first
-  const exists = db.prepare('SELECT id FROM memories WHERE id = ?').get(id);
+export function memoryRecall(db: Database.Database, userId: string, id: string): MemoryEntry | null {
+  // Visibility filter: caller can read their own memories + shared + project-scoped
+  const VISIBLE = `id = ? AND (user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')`;
+
+  const exists = db.prepare(`SELECT id FROM memories WHERE ${VISIBLE}`).get(id, userId);
   if (!exists) {
     return null;
   }
