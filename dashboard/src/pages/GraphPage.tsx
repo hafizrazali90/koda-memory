@@ -204,7 +204,7 @@ export default function GraphPage() {
     : { nodes: [], links: [] };
 
   return (
-    <div className="flex flex-col h-full" style={{ minHeight: 'calc(100vh - 120px)' }}>
+    <div className="flex flex-col">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <h2 className="text-2xl font-bold text-white">Knowledge Graph</h2>
@@ -293,8 +293,8 @@ export default function GraphPage() {
       {/* Graph container */}
       <div
         ref={containerRef}
-        className="relative flex-1 bg-gray-800 border border-gray-700 rounded-xl overflow-hidden"
-        style={{ minHeight: 500 }}
+        className="relative bg-gray-800 border border-gray-700 rounded-xl overflow-hidden"
+        style={{ height: 'calc(100vh - 230px)', minHeight: 480 }}
       >
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-800/80 z-10">
