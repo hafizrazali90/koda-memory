@@ -114,6 +114,33 @@ When you add a new `/admin/...` endpoint:
 
 ---
 
+## Backups (production)
+
+The brain DB is backed up daily and on demand. **Never** back up with `cp brain.db`
+— that misses the WAL and produces a silently incomplete copy (it dropped 8
+memories on 2026-06-19). Always use the verified backup script.
+
+```bash
+# On KVM8 — take a verified backup now
+KODA_DB_PATH=/opt/koda/brain.db npx tsx scripts/backup-db.ts
+```
+
+- Backups land in `/opt/koda/backups/brain-<timestamp>.db`, newest 14 retained.
+- Each backup is verified (memory count vs source); a mismatched copy is deleted
+  and the run exits non-zero.
+- Daily cron: `0 3 * * * /opt/koda/backup.sh` (logs to `/opt/koda/logs/backup.log`).
+
+### Restoring from a backup
+
+```bash
+# On KVM8
+pm2 stop koda-memory
+rm -f /opt/koda/brain.db-wal /opt/koda/brain.db-shm   # clear stale WAL/shm
+cp /opt/koda/backups/brain-<timestamp>.db /opt/koda/brain.db
+pm2 restart koda-memory
+curl -sf https://koda.tutorla.tech/health    # confirm it came back up
+```
+
 ## Wiping the test DB
 
 Tests create their own temp DBs in `os.tmpdir()`. They're cleaned up automatically
