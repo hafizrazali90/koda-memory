@@ -6,9 +6,6 @@ import type { DuplicateResult } from './types.js';
 // FTS score threshold to call LLM for confirmation (normalised 0-1, higher = more similar)
 const FTS_LLM_THRESHOLD = 0.85;
 
-// FTS-only threshold when LLM is unavailable — stricter to avoid false positives
-const FTS_ONLY_THRESHOLD = 0.92;
-
 interface MemoryRow {
   id: string;
   content: string;
@@ -114,7 +111,13 @@ export async function detectDuplicate(
 
   const llmAvailable = Boolean(process.env.OPENAI_API_KEY);
 
-  // Decide whether we have a duplicate
+  // Decide whether we have a duplicate.
+  //
+  // A duplicate is ONLY ever confirmed by the LLM. FTS rank alone is not safe:
+  // normaliseBm25 maps the best hit to ~1.0, so "top FTS score" is high for
+  // almost every memory that has any textual neighbour. Auto-marking on FTS
+  // alone wrongly flags unrelated memories as duplicates (observed 2026-06-19).
+  // Without an LLM key we record the check and leave the memory untouched.
   let isDuplicate = false;
   let similarityReason: string | undefined;
 
@@ -129,13 +132,9 @@ export async function detectDuplicate(
         similarityReason = `FTS score ${topScore.toFixed(2)} confirmed by LLM`;
       }
     }
-  } else if (topScore > FTS_ONLY_THRESHOLD) {
-    // High-confidence FTS match without LLM
-    isDuplicate = true;
-    similarityReason = `FTS score ${topScore.toFixed(2)} exceeds no-LLM threshold`;
   } else if (topScore > FTS_LLM_THRESHOLD && !llmAvailable) {
     console.warn(
-      `[duplicate-detector] OPENAI_API_KEY not set — skipping LLM for memory ${memoryId} (FTS score ${topScore.toFixed(2)})`
+      `[duplicate-detector] no LLM key — NOT auto-marking ${memoryId} (FTS ${topScore.toFixed(2)}); left for LLM-backed run`
     );
   }
 

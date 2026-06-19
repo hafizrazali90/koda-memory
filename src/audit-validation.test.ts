@@ -204,9 +204,11 @@ describe('Fix #1: Validation queue auto-processing', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Fix #3: Duplicate detection creates a graph link', () => {
-  it('a confirmed FTS-only duplicate creates a "supersedes" relationship', async () => {
-    // Two near-identical memories — FTS score should exceed the no-LLM threshold (0.92)
-    const canonical = await memoryStore(db, 'p', USER, {
+  it('does NOT auto-mark duplicates without an LLM key (safety against false positives)', async () => {
+    // Two identical memories. Tests run with no OPENAI_API_KEY, so the detector
+    // must NOT mark a duplicate on FTS rank alone — that wrongly flagged 171 real
+    // memories in production on 2026-06-19. It should only stamp validation_checked_at.
+    await memoryStore(db, 'p', USER, {
       content: 'Always include deleted_at IS NULL in every SIMS query for soft deletes',
       category: 'rule',
     }, USER);
@@ -216,27 +218,23 @@ describe('Fix #3: Duplicate detection creates a graph link', () => {
       category: 'rule',
     }, USER);
 
-    // Directly run the duplicate detector on the second memory
     const result = await detectDuplicate(db, dup.id, USER);
 
-    if (result.is_duplicate) {
-      // A supersedes edge should exist: canonical → dup
-      const rel = db.prepare(
-        `SELECT * FROM relationships WHERE relation_type = 'supersedes' AND target_id = ?`
-      ).get(dup.id) as Record<string, unknown> | undefined;
-      expect(rel).toBeDefined();
-      expect(rel!.source_id).toBe(result.duplicate_of);
+    // No LLM → never confirmed
+    expect(result.is_duplicate).toBe(false);
 
-      // The duplicate is marked outdated
-      const mem = db.prepare('SELECT confidence, duplicate_of FROM memories WHERE id = ?').get(dup.id) as { confidence: string; duplicate_of: string | null };
-      expect(mem.confidence).toBe('outdated');
-      expect(mem.duplicate_of).toBe(canonical.id);
-    } else {
-      // If FTS normalisation didn't cross the strict 0.92 threshold in this env,
-      // at least assert the detector ran and stamped the check (no crash, no edge).
-      const mem = db.prepare('SELECT validation_checked_at FROM memories WHERE id = ?').get(dup.id) as { validation_checked_at: string | null };
-      expect(mem.validation_checked_at).not.toBeNull();
-    }
+    // Memory left untouched (NOT marked outdated, no duplicate_of)
+    const mem = db.prepare('SELECT confidence, duplicate_of, validation_checked_at FROM memories WHERE id = ?').get(dup.id) as { confidence: string; duplicate_of: string | null; validation_checked_at: string | null };
+    expect(mem.duplicate_of).toBeNull();
+    expect(mem.confidence).not.toBe('outdated');
+    // But the check was recorded
+    expect(mem.validation_checked_at).not.toBeNull();
+
+    // And no spurious supersedes edge was created
+    const rel = db.prepare(
+      `SELECT COUNT(*) as cnt FROM relationships WHERE relation_type = 'supersedes' AND target_id = ?`
+    ).get(dup.id) as { cnt: number };
+    expect(rel.cnt).toBe(0);
   });
 
   it('non-duplicate memories do not create a spurious edge', async () => {

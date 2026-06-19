@@ -24,6 +24,19 @@ if (!dbPath) {
   process.exit(1);
 }
 
+// Duplicate + contradiction detection require the LLM to confirm. Without the
+// key this would mark jobs 'done' without any real analysis (and never
+// re-process them). Refuse to run rather than silently degrade. Use --force
+// only if you knowingly want a no-LLM pass (e.g. staleness_decay only).
+if (!process.env.OPENAI_API_KEY && !process.argv.includes('--force')) {
+  console.error(
+    'OPENAI_API_KEY not set. Validation needs the LLM to confirm duplicates/contradictions.\n' +
+    'The in-process server scheduler already has the key — prefer letting it drain the queue.\n' +
+    'To run anyway (staleness only / testing), pass --force.'
+  );
+  process.exit(1);
+}
+
 const maxJobs = process.argv[2] ? parseInt(process.argv[2], 10) : Infinity;
 const batchSize = process.argv[3] ? parseInt(process.argv[3], 10) : 20;
 const DELAY_MS = 500;
