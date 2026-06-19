@@ -58,9 +58,9 @@ describe('Database Connection', () => {
     expect(fk).toBe(1);
   });
 
-  it('runs all migrations (schema version 5)', () => {
+  it('runs all migrations (schema version 12)', () => {
     const row = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number };
-    expect(row.version).toBe(5);
+    expect(row.version).toBe(12);
   });
 
   it('memories table has all migrated columns', () => {
@@ -68,8 +68,8 @@ describe('Database Connection', () => {
       .prepare("SELECT name FROM pragma_table_info('memories')")
       .all() as { name: string }[];
     const names = cols.map((c) => c.name);
-    // migration 2–5 columns
-    for (const col of ['user_id', 'human_reviewed_at', 'created_by', 'flagged_outdated_by', 'flagged_outdated_at', 'superseded_at']) {
+    // migration 2–12 columns
+    for (const col of ['user_id', 'human_reviewed_at', 'created_by', 'flagged_outdated_by', 'flagged_outdated_at', 'superseded_at', 'deleted_at', 'embedding_model', 'conflicts_with', 'duplicate_of', 'validation_checked_at']) {
       expect(names).toContain(col);
     }
   });

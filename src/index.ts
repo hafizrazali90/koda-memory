@@ -1,5 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -16,6 +18,7 @@ import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
 import { buildUserMap, resolveUserFromToken, extractToken } from './auth.js';
+import { runValidationBatch } from './validation/engine.js';
 
 // --- Config ---
 
@@ -78,7 +81,7 @@ function createMcpServer(userId: string): McpServer {
     },
     async (params) => {
       const db = getConnection();
-      const memory = memoryRecall(db, params.id);
+      const memory = memoryRecall(db, userId, params.id);
       if (!memory) {
         return {
           content: [{ type: 'text' as const, text: `Memory ${params.id} not found` }],
@@ -142,7 +145,7 @@ function createMcpServer(userId: string): McpServer {
     async (params) => {
       try {
         const db = getConnection();
-        const result = memoryRelate(db, params);
+        const result = memoryRelate(db, userId, params);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };
@@ -279,7 +282,7 @@ function createMcpServer(userId: string): McpServer {
     async (params) => {
       try {
         const db = getConnection();
-        const result = sessionEnd(db, params.session_id, params.summary, params.branch, params.commit_count);
+        const result = sessionEnd(db, userId, params.session_id, params.summary, params.branch, params.commit_count);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };
@@ -303,7 +306,7 @@ function createMcpServer(userId: string): McpServer {
     async (params) => {
       const db = getConnection();
       const project = resolveProject(params.project);
-      const result = sessionList(db, project, params.limit);
+      const result = sessionList(db, project, params.limit, userId);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -337,7 +340,87 @@ function createMcpServer(userId: string): McpServer {
     }
   );
 
+  // validation_run
+  server.tool(
+    'validation_run',
+    'Run the background validation pipeline (duplicate + contradiction detection). Returns batch results.',
+    {
+      batch_size: z.number().optional().describe('Number of jobs to process in this batch (default 10)'),
+    },
+    async (params) => {
+      const db = getConnection();
+      const result = await runValidationBatch(db, userId, params.batch_size);
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
   return server;
+}
+
+// --- Admin REST helpers ---
+
+interface AdminPath {
+  route: string;
+  id?: string;
+  action?: string;
+}
+
+function parseAdminPath(pathname: string): AdminPath | null {
+  // Must start with /admin/
+  if (!pathname.startsWith('/admin/') && pathname !== '/admin') return null;
+
+  const rest = pathname.replace(/^\/admin\/?/, '');
+  if (!rest) return null;
+
+  // /admin/stats
+  if (rest === 'stats') return { route: 'stats' };
+
+  // /admin/graph
+  if (rest === 'graph') return { route: 'graph' };
+
+  // /admin/validation/queue
+  if (rest === 'validation/queue') return { route: 'validation-queue' };
+
+  // /admin/audit
+  if (rest === 'audit') return { route: 'audit' };
+
+  // /admin/search-gaps
+  if (rest === 'search-gaps') return { route: 'search-gaps' };
+
+  // /admin/memories
+  if (rest === 'memories') return { route: 'memories' };
+
+  // /admin/memories/:id/action  OR  /admin/memories/:id
+  const memMatch = rest.match(/^memories\/([^/]+)(?:\/([^/]+))?$/);
+  if (memMatch) {
+    const [, id, action] = memMatch;
+    if (action) return { route: 'memory-action', id, action };
+    return { route: 'memory', id };
+  }
+
+  return null;
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
+function jsonOk(res: ServerResponse, body: unknown, status = 200): void {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(payload);
+}
+
+function jsonErr(res: ServerResponse, message: string, status = 500): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: message }));
 }
 
 // --- HTTP Server ---
@@ -440,6 +523,338 @@ async function main() {
           streamableTransports.set(transport.sessionId, transport);
         }
         return;
+      }
+    }
+
+    // === Admin REST API ===
+    if (url.pathname.startsWith('/admin/') || url.pathname === '/admin') {
+      const adminPath = parseAdminPath(url.pathname);
+      if (!adminPath) {
+        jsonErr(res, 'Not Found', 404);
+        return;
+      }
+
+      try {
+        const db = getConnection();
+
+        // GET /admin/stats
+        if (adminPath.route === 'stats' && req.method === 'GET') {
+          const totalRow = db.prepare('SELECT COUNT(*) as cnt FROM memories').get() as { cnt: number };
+
+          const byUserRows = db.prepare(
+            'SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id'
+          ).all() as { user_id: string; cnt: number }[];
+          const by_user: Record<string, number> = {};
+          for (const r of byUserRows) by_user[r.user_id] = r.cnt;
+
+          const byProjectRows = db.prepare(
+            'SELECT project, COUNT(*) as cnt FROM memories GROUP BY project'
+          ).all() as { project: string; cnt: number }[];
+          const by_project: Record<string, number> = {};
+          for (const r of byProjectRows) by_project[r.project] = r.cnt;
+
+          const byConfRows = db.prepare(
+            'SELECT confidence, COUNT(*) as cnt FROM memories GROUP BY confidence'
+          ).all() as { confidence: string; cnt: number }[];
+          const by_confidence: Record<string, number> = {};
+          for (const r of byConfRows) by_confidence[r.confidence] = r.cnt;
+
+          const byCatRows = db.prepare(
+            'SELECT category, COUNT(*) as cnt FROM memories GROUP BY category'
+          ).all() as { category: string; cnt: number }[];
+          const by_category: Record<string, number> = {};
+          for (const r of byCatRows) by_category[r.category] = r.cnt;
+
+          const flaggedRow = db.prepare(
+            'SELECT COUNT(*) as cnt FROM memories WHERE flagged_outdated_by IS NOT NULL'
+          ).get() as { cnt: number };
+
+          const supersededRow = db.prepare(
+            'SELECT COUNT(*) as cnt FROM memories WHERE superseded_at IS NOT NULL'
+          ).get() as { cnt: number };
+
+          const deletedRow = db.prepare(
+            'SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NOT NULL'
+          ).get() as { cnt: number };
+
+          const queueDepthRow = db.prepare(
+            "SELECT COUNT(*) as cnt FROM validation_queue WHERE status = 'pending'"
+          ).get() as { cnt: number };
+
+          const searchGapsRow = db.prepare(
+            'SELECT COUNT(*) as cnt FROM search_gaps'
+          ).get() as { cnt: number };
+
+          const auditCountRow = db.prepare(
+            'SELECT COUNT(*) as cnt FROM audit_log'
+          ).get() as { cnt: number };
+
+          jsonOk(res, {
+            total_memories: totalRow.cnt,
+            by_user,
+            by_project,
+            by_confidence,
+            by_category,
+            flagged_count: flaggedRow.cnt,
+            superseded_count: supersededRow.cnt,
+            deleted_count: deletedRow.cnt,
+            validation_queue_depth: queueDepthRow.cnt,
+            search_gaps_count: searchGapsRow.cnt,
+            recent_audit_count: auditCountRow.cnt,
+          });
+          return;
+        }
+
+        // GET /admin/memories (paginated list)
+        if (adminPath.route === 'memories' && req.method === 'GET') {
+          const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+          const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '20', 10)));
+          const offset = (page - 1) * limit;
+
+          const filters: string[] = [];
+          const params: unknown[] = [];
+
+          const projectFilter = url.searchParams.get('project');
+          if (projectFilter) { filters.push('m.project = ?'); params.push(projectFilter); }
+
+          const userFilter = url.searchParams.get('user');
+          if (userFilter) { filters.push('m.user_id = ?'); params.push(userFilter); }
+
+          const confidenceFilter = url.searchParams.get('confidence');
+          if (confidenceFilter) { filters.push('m.confidence = ?'); params.push(confidenceFilter); }
+
+          const categoryFilter = url.searchParams.get('category');
+          if (categoryFilter) { filters.push('m.category = ?'); params.push(categoryFilter); }
+
+          const qFilter = url.searchParams.get('q');
+          if (qFilter) { filters.push("m.content LIKE ?"); params.push(`%${qFilter}%`); }
+
+          const flaggedFilter = url.searchParams.get('flagged');
+          if (flaggedFilter === 'true') { filters.push('m.flagged_outdated_by IS NOT NULL'); }
+          else if (flaggedFilter === 'false') { filters.push('m.flagged_outdated_by IS NULL'); }
+
+          const supersededFilter = url.searchParams.get('superseded');
+          if (supersededFilter === 'true') { filters.push('m.superseded_at IS NOT NULL'); }
+          else { filters.push('m.superseded_at IS NULL'); }  // default: exclude superseded
+
+          const deletedFilter = url.searchParams.get('deleted');
+          if (deletedFilter === 'true') { filters.push('m.deleted_at IS NOT NULL'); }
+          else { filters.push('m.deleted_at IS NULL'); }  // default: exclude deleted
+
+          const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+
+          const countRow = db.prepare(
+            `SELECT COUNT(*) as cnt FROM memories m ${where}`
+          ).get(...params) as { cnt: number };
+          const total = countRow.cnt;
+
+          const memories = db.prepare(`
+            SELECT m.id, m.project, m.user_id, m.category,
+                   SUBSTR(m.content, 1, 200) as content,
+                   m.confidence, m.created_at, m.updated_at, m.access_count,
+                   m.flagged_outdated_by, m.superseded_at, m.deleted_at
+            FROM memories m
+            ${where}
+            ORDER BY m.created_at DESC
+            LIMIT ? OFFSET ?
+          `).all(...params, limit, offset) as Record<string, unknown>[];
+
+          // Attach tags for each memory
+          const withTags = memories.map((mem) => {
+            const tags = (db.prepare(
+              'SELECT tag FROM tags WHERE memory_id = ? ORDER BY tag'
+            ).all(mem.id) as { tag: string }[]).map((t) => t.tag);
+            return { ...mem, tags };
+          });
+
+          jsonOk(res, {
+            memories: withTags,
+            total,
+            page,
+            limit,
+            pages: Math.ceil(total / limit),
+          });
+          return;
+        }
+
+        // GET /admin/memories/:id
+        if (adminPath.route === 'memory' && req.method === 'GET' && adminPath.id) {
+          const mem = db.prepare('SELECT * FROM memories WHERE id = ?').get(adminPath.id);
+          if (!mem) { jsonErr(res, 'Memory not found', 404); return; }
+
+          const tags = (db.prepare(
+            'SELECT tag FROM tags WHERE memory_id = ? ORDER BY tag'
+          ).all(adminPath.id) as { tag: string }[]).map((t) => t.tag);
+
+          const relationships = db.prepare(`
+            SELECT source_id, target_id, relation_type, created_at
+            FROM relationships
+            WHERE source_id = ? OR target_id = ?
+            ORDER BY created_at DESC
+          `).all(adminPath.id, adminPath.id);
+
+          jsonOk(res, { memory: mem, tags, relationships });
+          return;
+        }
+
+        // POST /admin/memories/:id/restore
+        if (adminPath.route === 'memory-action' && adminPath.action === 'restore' && req.method === 'POST') {
+          const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(adminPath.id);
+          if (!existing) { jsonErr(res, 'Memory not found', 404); return; }
+
+          db.prepare(
+            'UPDATE memories SET deleted_at = NULL, updated_at = ? WHERE id = ?'
+          ).run(new Date().toISOString(), adminPath.id);
+
+          jsonOk(res, { ok: true, id: adminPath.id });
+          return;
+        }
+
+        // DELETE /admin/memories/:id (soft delete)
+        if (adminPath.route === 'memory' && req.method === 'DELETE' && adminPath.id) {
+          const existing = db.prepare('SELECT id FROM memories WHERE id = ?').get(adminPath.id);
+          if (!existing) { jsonErr(res, 'Memory not found', 404); return; }
+
+          db.prepare(
+            'UPDATE memories SET deleted_at = ?, updated_at = ? WHERE id = ?'
+          ).run(new Date().toISOString(), new Date().toISOString(), adminPath.id);
+
+          jsonOk(res, { ok: true, id: adminPath.id });
+          return;
+        }
+
+        // GET /admin/graph
+        if (adminPath.route === 'graph' && req.method === 'GET') {
+          const graphLimit = Math.min(500, parseInt(url.searchParams.get('limit') || '100', 10));
+          const graphProject = url.searchParams.get('project');
+
+          const nodeFilters = ['m.deleted_at IS NULL', 'm.superseded_at IS NULL'];
+          const nodeParams: unknown[] = [];
+          if (graphProject) { nodeFilters.push('m.project = ?'); nodeParams.push(graphProject); }
+
+          const nodeWhere = `WHERE ${nodeFilters.join(' AND ')}`;
+
+          const nodes = db.prepare(`
+            SELECT m.id, SUBSTR(m.content, 1, 60) as label, m.confidence, m.user_id, m.category
+            FROM memories m
+            ${nodeWhere}
+            ORDER BY m.created_at DESC
+            LIMIT ?
+          `).all(...nodeParams, graphLimit) as { id: string; label: string; confidence: string; user_id: string; category: string }[];
+
+          const nodeIds = new Set(nodes.map((n) => n.id));
+
+          // Only return links where both endpoints are in the node set
+          const allLinks = db.prepare(`
+            SELECT source_id, target_id, relation_type as type FROM relationships
+          `).all() as { source_id: string; target_id: string; type: string }[];
+
+          const links = allLinks
+            .filter((l) => nodeIds.has(l.source_id) && nodeIds.has(l.target_id))
+            .map((l) => ({ source: l.source_id, target: l.target_id, type: l.type }));
+
+          jsonOk(res, { nodes, links });
+          return;
+        }
+
+        // GET /admin/validation/queue
+        if (adminPath.route === 'validation-queue' && req.method === 'GET') {
+          const statusFilter = url.searchParams.get('status') || 'pending';
+          const jobs = db.prepare(`
+            SELECT id, memory_id, job_type, status, attempts, last_error, created_at, processed_at
+            FROM validation_queue
+            WHERE status = ?
+            ORDER BY created_at ASC
+          `).all(statusFilter);
+          const totalRow = db.prepare(
+            'SELECT COUNT(*) as cnt FROM validation_queue WHERE status = ?'
+          ).get(statusFilter) as { cnt: number };
+          jsonOk(res, { jobs, total: totalRow.cnt });
+          return;
+        }
+
+        // GET /admin/audit
+        if (adminPath.route === 'audit' && req.method === 'GET') {
+          const auditLimit = Math.min(200, parseInt(url.searchParams.get('limit') || '50', 10));
+          const auditMemoryId = url.searchParams.get('memory_id');
+
+          if (auditMemoryId) {
+            const entries = db.prepare(`
+              SELECT id, memory_id, action, actor, payload, created_at
+              FROM audit_log
+              WHERE memory_id = ?
+              ORDER BY created_at DESC
+              LIMIT ?
+            `).all(auditMemoryId, auditLimit);
+            jsonOk(res, { entries });
+          } else {
+            const entries = db.prepare(`
+              SELECT id, memory_id, action, actor, payload, created_at
+              FROM audit_log
+              ORDER BY created_at DESC
+              LIMIT ?
+            `).all(auditLimit);
+            jsonOk(res, { entries });
+          }
+          return;
+        }
+
+        // GET /admin/search-gaps
+        if (adminPath.route === 'search-gaps' && req.method === 'GET') {
+          const gapLimit = Math.min(200, parseInt(url.searchParams.get('limit') || '20', 10));
+          const gapProject = url.searchParams.get('project');
+
+          if (gapProject) {
+            const gaps = db.prepare(`
+              SELECT id, query, result_count, top_score, user_id, project, created_at
+              FROM search_gaps
+              WHERE project = ?
+              ORDER BY created_at DESC
+              LIMIT ?
+            `).all(gapProject, gapLimit);
+            jsonOk(res, { gaps });
+          } else {
+            const gaps = db.prepare(`
+              SELECT id, query, result_count, top_score, user_id, project, created_at
+              FROM search_gaps
+              ORDER BY created_at DESC
+              LIMIT ?
+            `).all(gapLimit);
+            jsonOk(res, { gaps });
+          }
+          return;
+        }
+
+        // Unmatched admin route
+        jsonErr(res, 'Not Found', 404);
+        return;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        jsonErr(res, message, 500);
+        return;
+      }
+    }
+
+    // Serve dashboard static files
+    if (url.pathname.startsWith('/dashboard/') || url.pathname === '/dashboard') {
+      const dashboardDist = path.join(process.cwd(), 'dashboard', 'dist');
+      let filePath = url.pathname.replace('/dashboard', '');
+      if (filePath === '/' || filePath === '') filePath = '/index.html';
+      const fullPath = path.join(dashboardDist, filePath);
+      try {
+        const content = fs.readFileSync(fullPath);
+        const ext = path.extname(fullPath);
+        const mimes: Record<string, string> = {
+          '.html': 'text/html',
+          '.js': 'application/javascript',
+          '.css': 'text/css',
+          '.svg': 'image/svg+xml',
+        };
+        res.writeHead(200, { 'Content-Type': mimes[ext] || 'application/octet-stream' });
+        res.end(content);
+        return;
+      } catch {
+        // fall through to 404
       }
     }
 

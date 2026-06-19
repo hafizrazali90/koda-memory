@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { storeEmbedding, vectorSearchByEmbedding } from '../search/vector.js';
 import { generateEmbedding, isEmbeddingAvailable } from '../embeddings/openai.js';
 import { processMemory, isProcessorAvailable } from '../llm/processor.js';
+import { scheduleValidation } from '../validation/engine.js';
 
 export interface MemoryStoreInput {
   content: string;
@@ -166,6 +167,13 @@ export async function memoryStore(
   if (!processed && similar.length > 0) {
     result.warning = `Similar memory exists — consider memory_update instead.`;
     result.similar_existing = similar;
+  }
+
+  // Step 5 — schedule async validation (fire-and-forget, must never block the response)
+  try {
+    scheduleValidation(db, id, userId);
+  } catch {
+    // Validation scheduling failure is non-fatal — the memory was stored successfully
   }
 
   return result;

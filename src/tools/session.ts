@@ -77,6 +77,7 @@ export function sessionStart(
 
 export function sessionEnd(
   db: Database.Database,
+  userId: string,
   sessionId: string,
   summary: string,
   branch?: string,
@@ -84,8 +85,9 @@ export function sessionEnd(
 ): SessionEndResult {
   const now = new Date().toISOString();
 
-  const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId);
+  const existing = db.prepare('SELECT id, user_id FROM sessions WHERE id = ?').get(sessionId) as { id: string; user_id: string } | undefined;
   if (!existing) throw new Error(`Session ${sessionId} not found`);
+  if (existing.user_id !== userId) throw new Error(`Session ${sessionId} not owned by caller`);
 
   db.prepare(`
     UPDATE sessions SET ended_at = ?, summary = ?, branch = ?, commit_count = ?

@@ -80,7 +80,7 @@ function enrichMemory(
   userId: string
 ): Omit<MemorySearchResult, 'score' | 'source'> | null {
   const memory = db.prepare(
-    'SELECT content, why, category FROM memories WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = ?) AND superseded_at IS NULL'
+    'SELECT content, why, category FROM memories WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = ?) AND superseded_at IS NULL AND deleted_at IS NULL'
   ).get(id, userId, 'shared', 'sifututor') as { content: string; why: string | null; category: string } | undefined;
 
   if (!memory) return null;
