@@ -442,6 +442,32 @@ async function main() {
       return;
     }
 
+    // Dashboard static files — no auth required (browser needs HTML/JS to render the login page)
+    if (url.pathname.startsWith('/dashboard') && req.method === 'GET') {
+      const dashboardDist = path.join(process.cwd(), 'dashboard', 'dist');
+      let filePath = url.pathname.replace('/dashboard', '') || '/index.html';
+      if (filePath === '/') filePath = '/index.html';
+      const fullPath = path.join(dashboardDist, filePath);
+      try {
+        const content = fs.readFileSync(fullPath);
+        const ext = path.extname(fullPath);
+        const mimes: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+        res.writeHead(200, { 'Content-Type': mimes[ext] || 'application/octet-stream' });
+        res.end(content);
+      } catch {
+        // asset not found — serve index.html for SPA routing
+        try {
+          const index = fs.readFileSync(path.join(dashboardDist, 'index.html'));
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(index);
+        } catch {
+          res.writeHead(404);
+          res.end('Not Found');
+        }
+      }
+      return;
+    }
+
     // All other routes require auth — resolveUser returns null on bad/missing token
     const userId = resolveUser(req);
     if (!userId) {
@@ -832,29 +858,6 @@ async function main() {
         const message = err instanceof Error ? err.message : String(err);
         jsonErr(res, message, 500);
         return;
-      }
-    }
-
-    // Serve dashboard static files
-    if (url.pathname.startsWith('/dashboard/') || url.pathname === '/dashboard') {
-      const dashboardDist = path.join(process.cwd(), 'dashboard', 'dist');
-      let filePath = url.pathname.replace('/dashboard', '');
-      if (filePath === '/' || filePath === '') filePath = '/index.html';
-      const fullPath = path.join(dashboardDist, filePath);
-      try {
-        const content = fs.readFileSync(fullPath);
-        const ext = path.extname(fullPath);
-        const mimes: Record<string, string> = {
-          '.html': 'text/html',
-          '.js': 'application/javascript',
-          '.css': 'text/css',
-          '.svg': 'image/svg+xml',
-        };
-        res.writeHead(200, { 'Content-Type': mimes[ext] || 'application/octet-stream' });
-        res.end(content);
-        return;
-      } catch {
-        // fall through to 404
       }
     }
 
