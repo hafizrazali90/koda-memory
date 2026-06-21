@@ -13,7 +13,10 @@ function getClient(): OpenAI {
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY environment variable is required for vector search');
     }
-    client = new OpenAI({ apiKey });
+    // Bound each request (SDK default is 10 MINUTES) and don't let the SDK add
+    // its own retries on top of our manual retry loop below. A hung connection
+    // therefore fails fast instead of lingering.
+    client = new OpenAI({ apiKey, timeout: 8000, maxRetries: 0 });
   }
   return client;
 }

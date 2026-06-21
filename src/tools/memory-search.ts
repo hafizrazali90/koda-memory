@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3';
 import { ftsSearch } from '../search/fts.js';
-import { vectorSearch } from '../search/vector.js';
+import { vectorSearch, type VectorResult } from '../search/vector.js';
 import { blendResults, type MemoryMeta } from '../search/blend.js';
+import { withTimeout, vectorTimeoutMs } from '../util/timeout.js';
 
 export interface MemorySearchInput {
   query: string;
@@ -28,9 +29,12 @@ export async function memorySearch(
 ): Promise<MemorySearchResult[]> {
   const limit = input.limit ?? 10;
 
+  // FTS is instant (in-process SQLite). The vector path makes a remote embedding
+  // call (~400ms, occasionally many seconds) — cap it and degrade to keyword +
+  // graph results if it's slow, so an OpenAI hiccup can't hang the search.
   const [ftsResults, vecResults] = await Promise.all([
     Promise.resolve(ftsSearch(db, input.query, { category: input.category, tags: input.tags, limit, userId })),
-    vectorSearch(db, input.query, limit, userId).catch(() => []),
+    withTimeout<VectorResult[]>(vectorSearch(db, input.query, limit, userId), vectorTimeoutMs(), []),
   ]);
 
   // Collect metadata (recency + signal weighting) before blending

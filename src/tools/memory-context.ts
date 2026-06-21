@@ -1,8 +1,9 @@
 import type Database from 'better-sqlite3';
 import { ftsSearch } from '../search/fts.js';
-import { vectorSearch } from '../search/vector.js';
+import { vectorSearch, type VectorResult } from '../search/vector.js';
 import { graphTraverse } from '../search/graph.js';
 import { blendResults, type MemoryMeta } from '../search/blend.js';
+import { withTimeout, vectorTimeoutMs } from '../util/timeout.js';
 
 export interface MemoryContextInput {
   task_description: string;
@@ -34,9 +35,10 @@ export async function memoryContext(
   const limit = input.limit ?? 15;
   const graphDepth = Math.min(input.graph_depth ?? 1, 3);
 
+  // Cap the remote embedding call; degrade to keyword + graph if it's slow.
   const [ftsResults, vecResults] = await Promise.all([
     Promise.resolve(ftsSearch(db, input.task_description, { limit: limit * 2, operator: 'OR', userId })),
-    vectorSearch(db, input.task_description, limit * 2, userId).catch(() => []),
+    withTimeout<VectorResult[]>(vectorSearch(db, input.task_description, limit * 2, userId), vectorTimeoutMs(), []),
   ]);
 
   const seedIds = new Set<string>();
