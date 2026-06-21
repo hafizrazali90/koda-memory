@@ -1,10 +1,19 @@
 import type Database from 'better-sqlite3';
 import { ftsSearch } from '../search/fts.js';
 import { createRelationship } from '../search/graph.js';
+import { embeddingSimilarity } from '../search/vector.js';
+import { isEmbeddingAvailable } from '../embeddings/openai.js';
 import { askYesNo } from '../llm/classifier.js';
 import type { ContradictionResult } from './types.js';
 
 const MAX_CANDIDATES = 3;
+
+// A genuine contradiction is two claims about the SAME thing. Require the pair
+// to be semantically close before spending an LLM call — this gates out the
+// topically-unrelated FTS coincidences that gpt-4o-mini was wrongly labelling
+// "contradiction" (observed 2026-06-21: ~180 false edges, almost all unrelated
+// memories that merely shared a keyword).
+const VECTOR_PREFILTER_THRESHOLD = 0.78;
 
 interface MemoryRow {
   id: string;
@@ -16,13 +25,22 @@ interface MemoryRow {
 }
 
 /**
- * Ask the configured LLM whether two statements contradict each other.
+ * Ask the configured LLM whether two statements DIRECTLY contradict each other.
  * Throws on API failure (so the job retries) — never silently returns false.
+ *
+ * The prompt is deliberately strict: only a true factual contradiction counts,
+ * not "related", "complementary", or "about overlapping topics". gpt-4o-mini
+ * over-calls contradictions on a loose prompt.
  */
 async function askLlmIsContradiction(contentA: string, contentB: string): Promise<boolean> {
   return askYesNo(
     `Statement A:\n"${contentA}"\n\nStatement B:\n"${contentB}"\n\n` +
-      `Do these two statements contradict each other?`
+      `Do these two statements DIRECTLY contradict each other — i.e. they make ` +
+      `opposing claims about the SAME fact, such that one MUST be false if the ` +
+      `other is true?\n` +
+      `Answer NO if they are merely about different topics, are complementary, ` +
+      `describe different things, or are related but compatible. Only answer YES ` +
+      `for a genuine factual conflict.`
   );
 }
 
@@ -124,6 +142,15 @@ export async function detectContradiction(
       .get(candidateId) as { id: string; content: string } | undefined;
 
     if (!candidate) continue;
+
+    // Same-topic vector gate: skip pairs that aren't semantically close. A real
+    // contradiction is two opposing claims about the same thing, so they must be
+    // similar. This also saves an LLM call. If embeddings are unavailable we
+    // can't gate, so fall through to the LLM.
+    if (isEmbeddingAvailable()) {
+      const sim = embeddingSimilarity(db, memoryId, candidateId);
+      if (sim !== null && sim < VECTOR_PREFILTER_THRESHOLD) continue;
+    }
 
     const isContradiction = await askLlmIsContradiction(memory.content, candidate.content);
 
