@@ -20,9 +20,9 @@ import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
 import { recordAudit } from './tools/audit.js';
-import { buildUserMap, resolveUserFromToken, extractToken } from './auth.js';
-import { runValidationBatch, startValidationScheduler } from './validation/engine.js';
+import { buildUserMap, resolveUserFromToken, extractToken, verifyPassword, hashPassword, generateApiKey, buildAdminSet } from './auth.js';
 import { normalizeProject } from './project-alias.js';
+import { runValidationBatch, startValidationScheduler } from './validation/engine.js';
 
 // --- Config ---
 
@@ -34,6 +34,7 @@ function resolveProject(paramProject?: string): string {
 
 // Per-user API key resolution lives in ./auth.js (extracted for unit testing).
 const USER_MAP = buildUserMap();
+const ADMIN_SET = buildAdminSet();
 
 // --- MCP Server factory ---
 
@@ -417,6 +418,7 @@ function jsonErr(res: ServerResponse, message: string, status = 500): void {
  * Create the Koda HTTP server.
  *
  * opts.userMap  — token→userId map; defaults to USER_MAP (built from env vars)
+ * opts.adminSet — userIds treated as admin when authenticating via userMap; defaults to ADMIN_SET (KODA_ADMIN_USERS)
  * opts.dbGetter — function that returns the DB connection; defaults to getConnection()
  *
  * The returned server is NOT yet listening. Call server.listen(port, ...) to start it.
@@ -425,9 +427,11 @@ function jsonErr(res: ServerResponse, message: string, status = 500): void {
  */
 export function createHttpServer(opts?: {
   userMap?: Map<string, string>;
+  adminSet?: Set<string>;
   dbGetter?: () => Database.Database;
 }): Server {
   const userMap = opts?.userMap ?? USER_MAP;
+  const adminSet = opts?.adminSet ?? ADMIN_SET;
   const dbGetter = opts?.dbGetter ?? getConnection;
 
   // Per-server session state — each createHttpServer() call gets its own maps
@@ -437,10 +441,48 @@ export function createHttpServer(opts?: {
   return createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
+    // Root redirect → dashboard
+    if (url.pathname === '/') {
+      res.writeHead(302, { Location: '/dashboard' });
+      res.end();
+      return;
+    }
+
     // Health check — no auth required
     if (url.pathname === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', version: '0.1.0' }));
+      return;
+    }
+
+    // Dashboard login — no auth required
+    if (url.pathname === '/auth/login' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const { email, password } = JSON.parse(body) as { email?: string; password?: string };
+          if (!email || !password) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'email and password required' }));
+            return;
+          }
+          const db = dbGetter();
+          const user = db.prepare(
+            'SELECT password_hash, salt, api_key FROM dashboard_users WHERE email = ? LIMIT 1'
+          ).get(email) as { password_hash: string; salt: string; api_key: string } | undefined;
+          if (!user || !verifyPassword({ hash: user.password_hash, salt: user.salt }, password)) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid email or password' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ token: user.api_key }));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+      });
       return;
     }
 
@@ -476,9 +518,25 @@ export function createHttpServer(opts?: {
       return;
     }
 
-    // All other routes require auth
+    // All other routes require auth.
+    // Check env-var user map first, then fall back to dashboard_users table.
     const authToken = extractToken(req.headers['authorization'], req.url, req.headers.host);
-    const userId = resolveUserFromToken(userMap, authToken);
+    let userId = resolveUserFromToken(userMap, authToken);
+    let isAdmin = false;
+    if (!userId && authToken) {
+      const db = dbGetter();
+      const row = db.prepare('SELECT email, role FROM dashboard_users WHERE api_key = ? LIMIT 1').get(authToken) as
+        | { email: string; role: string }
+        | undefined;
+      if (row) {
+        userId = row.email;
+        isAdmin = row.role === 'admin';
+      }
+    } else if (userId) {
+      // Personal-key (env-var) users are admin only if explicitly listed in
+      // KODA_ADMIN_USERS — see auth.ts. Fail-closed: unlisted → not admin.
+      isAdmin = adminSet.has(userId);
+    }
     if (!userId) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
@@ -560,7 +618,10 @@ export function createHttpServer(opts?: {
     }
 
     // === Admin REST API ===
-    if (url.pathname.startsWith('/admin/') || url.pathname === '/admin') {
+    // Dashboard user management has its own dedicated block below (with its
+    // own admin gate) — exclude it here so it isn't swallowed by parseAdminPath's
+    // 404 fallback, which doesn't know that route.
+    if ((url.pathname.startsWith('/admin/') || url.pathname === '/admin') && !url.pathname.startsWith('/admin/dashboard-users')) {
       const adminPath = parseAdminPath(url.pathname);
       if (!adminPath) {
         jsonErr(res, 'Not Found', 404);
@@ -920,6 +981,122 @@ export function createHttpServer(opts?: {
       }
     }
 
+    // === Dashboard user management (/admin/dashboard-users) — admin only ===
+    if (url.pathname.startsWith('/admin/dashboard-users')) {
+      if (!isAdmin) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
+      const db = dbGetter();
+      try {
+        // GET /admin/dashboard-users — list all users
+        if (req.method === 'GET' && url.pathname === '/admin/dashboard-users') {
+          const users = db.prepare(
+            'SELECT id, email, role, created_at FROM dashboard_users ORDER BY created_at ASC'
+          ).all();
+          jsonOk(res, { users });
+          return;
+        }
+
+        // POST /admin/dashboard-users — create a new user
+        if (req.method === 'POST' && url.pathname === '/admin/dashboard-users') {
+          let body = '';
+          req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          req.on('end', () => {
+            try {
+              const { email, password, role } = JSON.parse(body) as {
+                email?: string; password?: string; role?: string;
+              };
+              if (!email || !password) {
+                jsonErr(res, 'email and password required', 400);
+                return;
+              }
+              const existing = db.prepare('SELECT id FROM dashboard_users WHERE email = ?').get(email);
+              if (existing) {
+                jsonErr(res, 'User with this email already exists', 409);
+                return;
+              }
+              const saltHash = hashPassword(password);
+              const [salt, hash] = saltHash.split(':');
+              const id = randomUUID();
+              const apiKey = generateApiKey();
+              const userRole = role === 'admin' ? 'admin' : 'user';
+              db.prepare(
+                'INSERT INTO dashboard_users (id, email, password_hash, salt, api_key, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+              ).run(id, email, hash, salt, apiKey, userRole, new Date().toISOString());
+              jsonOk(res, { id, email, role: userRole, created_at: new Date().toISOString() });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              jsonErr(res, message, 400);
+            }
+          });
+          return;
+        }
+
+        // DELETE /admin/dashboard-users/:id — remove a user
+        const deleteMatch = url.pathname.match(/^\/admin\/dashboard-users\/([^/]+)$/);
+        if (req.method === 'DELETE' && deleteMatch) {
+          const targetId = deleteMatch[1];
+          const target = db.prepare('SELECT email, role FROM dashboard_users WHERE id = ?').get(targetId) as
+            | { email: string; role: string } | undefined;
+          if (!target) {
+            jsonErr(res, 'User not found', 404);
+            return;
+          }
+          // Self-deletion would invalidate the requester's own session mid-request.
+          if (target.email === userId) {
+            jsonErr(res, 'Cannot delete your own account', 400);
+            return;
+          }
+          // Deleting the last admin would leave nobody able to manage dashboard
+          // users at all (the Users page itself requires an admin to reach it).
+          if (target.role === 'admin') {
+            const adminCount = (db.prepare(
+              "SELECT COUNT(*) as count FROM dashboard_users WHERE role = 'admin'"
+            ).get() as { count: number }).count;
+            if (adminCount <= 1) {
+              jsonErr(res, 'Cannot delete the last admin account', 409);
+              return;
+            }
+          }
+          db.prepare('DELETE FROM dashboard_users WHERE id = ?').run(targetId);
+          jsonOk(res, { ok: true });
+          return;
+        }
+
+        // PUT /admin/dashboard-users/:id/password — change a user's password
+        const pwdMatch = url.pathname.match(/^\/admin\/dashboard-users\/([^/]+)\/password$/);
+        if (req.method === 'PUT' && pwdMatch) {
+          const targetId = pwdMatch[1];
+          let body = '';
+          req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          req.on('end', () => {
+            try {
+              const { password } = JSON.parse(body) as { password?: string };
+              if (!password) { jsonErr(res, 'password required', 400); return; }
+              const saltHash = hashPassword(password);
+              const [salt, hash] = saltHash.split(':');
+              db.prepare(
+                'UPDATE dashboard_users SET password_hash = ?, salt = ? WHERE id = ?'
+              ).run(hash, salt, targetId);
+              jsonOk(res, { ok: true });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              jsonErr(res, message, 400);
+            }
+          });
+          return;
+        }
+
+        jsonErr(res, 'Not Found', 404);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        jsonErr(res, message, 500);
+      }
+      return;
+    }
+
     res.writeHead(404);
     res.end('Not Found');
   });
@@ -927,7 +1104,25 @@ export function createHttpServer(opts?: {
 
 // --- Entry point ---
 
+function seedAdminUser(db: Database.Database): void {
+  const ADMIN_EMAIL = process.env.KODA_ADMIN_EMAIL || 'admin@sifututor.my';
+  const ADMIN_PASSWORD = process.env.KODA_ADMIN_PASSWORD || 'password123';
+  const existing = db.prepare('SELECT id FROM dashboard_users WHERE email = ?').get(ADMIN_EMAIL);
+  if (!existing) {
+    const saltHash = hashPassword(ADMIN_PASSWORD);
+    const [salt, hash] = saltHash.split(':');
+    const apiKey = generateApiKey();
+    db.prepare(
+      'INSERT INTO dashboard_users (id, email, password_hash, salt, api_key, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(randomUUID(), ADMIN_EMAIL, hash, salt, apiKey, 'admin', new Date().toISOString());
+    console.log(`Dashboard admin created: ${ADMIN_EMAIL}`);
+  }
+}
+
 async function main() {
+  const db = getConnection();
+  seedAdminUser(db);
+
   const server = createHttpServer();
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Koda Memory server listening on http://0.0.0.0:${PORT}`);
@@ -935,6 +1130,7 @@ async function main() {
     console.log(`Streamable HTTP endpoint: POST /mcp`);
     console.log(`Auth: ${USER_MAP.size > 0 ? 'enabled' : 'DISABLED (no keys set — dev mode)'}`);
     console.log(`DB: ${process.env.KODA_DB_PATH || '(default: .koda/brain.db)'}`);
+    console.log(`Dashboard: http://localhost:${PORT}/dashboard`);
   });
 
   // Drain the validation queue automatically in the background.

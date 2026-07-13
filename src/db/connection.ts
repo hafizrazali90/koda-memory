@@ -274,6 +274,31 @@ function runMigrations(db: Database.Database): void {
   db.prepare(
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (13, datetime('now'))"
   ).run();
+
+  // Migration 14 — dashboard_users: email+password login for the web dashboard.
+  // api_key links to memory user_id so dashboard sessions share the same memory space.
+  const hasDashboardUsers = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='dashboard_users'"
+  ).get();
+  if (!hasDashboardUsers) {
+    db.exec(`
+      CREATE TABLE dashboard_users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        salt TEXT NOT NULL,
+        api_key TEXT UNIQUE NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dashboard_users_api_key ON dashboard_users(api_key);
+      CREATE INDEX IF NOT EXISTS idx_dashboard_users_email ON dashboard_users(email);
+    `);
+  }
+
+  db.prepare(
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (14, datetime('now'))"
+  ).run();
 }
 
 function createVectorTable(db: Database.Database): void {

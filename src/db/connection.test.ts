@@ -58,9 +58,9 @@ describe('Database Connection', () => {
     expect(fk).toBe(1);
   });
 
-  it('runs all migrations (schema version 13)', () => {
+  it('runs all migrations (schema version 14)', () => {
     const row = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number };
-    expect(row.version).toBe(13);
+    expect(row.version).toBe(14);
   });
 
   it('validation_queue has the next_attempt_at retry column', () => {

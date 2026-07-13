@@ -152,3 +152,16 @@ export interface MemoryFilters {
   page?: number;
   per_page?: number;
 }
+
+// ---- Dashboard user management ----
+
+export interface DashboardUser {
+  id: string;
+  email: string;
+  role: 'admin' | 'user';
+  created_at: string;
+}
+
+export interface DashboardUsersResponse {
+  users: DashboardUser[];
+}

@@ -7,6 +7,8 @@ import type {
   ValidationResult,
   AuditLog,
   MemoryFilters,
+  DashboardUser,
+  DashboardUsersResponse,
 } from './types';
 
 const BASE = '';  // same origin
@@ -109,3 +111,22 @@ export const runValidation = (batchSize = 10) =>
 // Audit
 export const getAudit = (memoryId?: string) =>
   api<AuditLog>('/admin/audit' + (memoryId ? '?memory_id=' + memoryId : ''));
+
+// Dashboard user management
+export const getDashboardUsers = () =>
+  api<DashboardUsersResponse>('/admin/dashboard-users');
+
+export const createDashboardUser = (email: string, password: string, role: 'admin' | 'user') =>
+  api<DashboardUser>('/admin/dashboard-users', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, role }),
+  });
+
+export const deleteDashboardUser = (id: string) =>
+  api<{ ok: boolean }>('/admin/dashboard-users/' + id, { method: 'DELETE' });
+
+export const changeUserPassword = (id: string, password: string) =>
+  api<{ ok: boolean }>('/admin/dashboard-users/' + id + '/password', {
+    method: 'PUT',
+    body: JSON.stringify({ password }),
+  });

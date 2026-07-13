@@ -6,35 +6,32 @@ interface Props {
 }
 
 export default function LoginPage({ onLogin }: Props) {
-  const [key, setKey] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmed = key.trim();
-    if (!trimmed) {
-      setError('API key is required');
+    if (!email.trim() || !password) {
+      setError('Email and password are required');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      // Quick validation: hit /admin/stats
-      const res = await fetch('/admin/stats', {
-        headers: { Authorization: `Bearer ${trimmed}` },
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
       });
-      if (res.status === 401) {
-        setError('Invalid API key');
+      const data = await res.json() as { token?: string; error?: string };
+      if (!res.ok || !data.token) {
+        setError(data.error || 'Invalid credentials');
         setLoading(false);
         return;
       }
-      if (!res.ok) {
-        setError(`Server error: ${res.status}`);
-        setLoading(false);
-        return;
-      }
-      setToken(trimmed);
+      setToken(data.token);
       onLogin();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
@@ -59,18 +56,36 @@ export default function LoginPage({ onLogin }: Props) {
 
         <form
           onSubmit={handleSubmit}
-          className="bg-gray-800 rounded-xl shadow-2xl p-8 space-y-6 border border-gray-700"
+          className="bg-gray-800 rounded-xl shadow-2xl p-8 space-y-5 border border-gray-700"
         >
           <div>
-            <label htmlFor="apikey" className="block text-sm font-medium text-gray-300 mb-2">
-              API Key (Bearer token)
+            <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-2">
+              Email
             </label>
             <input
-              id="apikey"
+              id="email"
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="admin@sifututor.my"
+              autoComplete="email"
+              autoFocus
+              className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-gray-100
+                         placeholder-gray-500 focus:outline-none focus:border-indigo-500 focus:ring-1
+                         focus:ring-indigo-500 transition"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-gray-300 mb-2">
+              Password
+            </label>
+            <input
+              id="password"
               type="password"
-              value={key}
-              onChange={e => setKey(e.target.value)}
-              placeholder="koda_..."
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••"
               autoComplete="current-password"
               className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-gray-100
                          placeholder-gray-500 focus:outline-none focus:border-indigo-500 focus:ring-1
@@ -99,7 +114,7 @@ export default function LoginPage({ onLogin }: Props) {
                   <path className="opacity-75" fill="currentColor"
                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Verifying...
+                Signing in...
               </span>
             ) : (
               'Sign In'

@@ -7,16 +7,17 @@ import MemoryDetail from './pages/MemoryDetail';
 import GraphPage from './pages/GraphPage';
 import ValidationPage from './pages/ValidationPage';
 import AuditPage from './pages/AuditPage';
+import UsersPage from './pages/UsersPage';
 
 // ---- Route types ----
-type RouteKey = '' | 'memories' | 'graph' | 'validation' | 'audit' | 'memory-detail';
+type RouteKey = '' | 'memories' | 'graph' | 'validation' | 'audit' | 'memory-detail' | 'users';
 
 function parseHash(): { route: RouteKey; param?: string } {
   const raw = window.location.hash.replace(/^#\/?/, '');
   if (raw.startsWith('memory/')) {
     return { route: 'memory-detail', param: raw.slice('memory/'.length) };
   }
-  if (['', 'memories', 'graph', 'validation', 'audit'].includes(raw)) {
+  if (['', 'memories', 'graph', 'validation', 'audit', 'users'].includes(raw)) {
     return { route: raw as RouteKey };
   }
   return { route: '' };
@@ -105,6 +106,12 @@ const Icons = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
     </svg>
   ),
+  Users: (
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  ),
 };
 
 // ---- Main App ----
@@ -161,6 +168,8 @@ export default function App() {
     content = <ValidationPage />;
   } else if (route === 'audit') {
     content = <AuditPage />;
+  } else if (route === 'users') {
+    content = <UsersPage />;
   } else {
     content = <StatsPage />;
   }
@@ -171,9 +180,10 @@ export default function App() {
     { label: 'Graph',      route: 'graph',      icon: Icons.Graph },
     { label: 'Validation', route: 'validation', icon: Icons.Validation },
     { label: 'Audit',      route: 'audit',      icon: Icons.Audit },
+    { label: 'Users',      route: 'users',      icon: Icons.Users },
   ];
 
-  const activeRoute = route === 'memory-detail' ? 'memories' : route;
+  const activeRoute = route === 'memory-detail' ? 'memories' : route as RouteKey;
 
   return (
     <div className="min-h-screen bg-gray-900 flex">
