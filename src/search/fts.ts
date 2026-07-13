@@ -28,6 +28,7 @@ export function ftsSearch(
   options?: {
     category?: string;
     tags?: string[];
+    project?: string;
     limit?: number;
     operator?: 'AND' | 'OR';
     userId?: string;
@@ -63,6 +64,12 @@ export function ftsSearch(
     joinMemories = true;
     conditions.push('m.category = ?');
     params.push(options.category);
+  }
+
+  if (options?.project) {
+    joinMemories = true;
+    conditions.push('m.project = ?');
+    params.push(options.project);
   }
 
   if (options?.tags && options.tags.length > 0) {

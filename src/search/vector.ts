@@ -34,7 +34,10 @@ export async function vectorSearch(
   db: Database.Database,
   query: string,
   limit: number = 20,
-  userId?: string
+  userId?: string,
+  tags?: string[],
+  category?: string,
+  project?: string
 ): Promise<VectorResult[]> {
   if (!isEmbeddingAvailable()) {
     return [];
@@ -52,13 +55,30 @@ export async function vectorSearch(
 
   const ids = candidates.map((c) => c.id);
   const placeholders = ids.map(() => '?').join(',');
+  const params: unknown[] = [...ids, userId];
+  let tagClause = '';
+  if (tags && tags.length > 0) {
+    const tagPlaceholders = tags.map(() => '?').join(', ');
+    tagClause = ` AND id IN (SELECT memory_id FROM tags WHERE tag IN (${tagPlaceholders}))`;
+    params.push(...tags);
+  }
+  let categoryClause = '';
+  if (category) {
+    categoryClause = ' AND category = ?';
+    params.push(category);
+  }
+  let projectClause = '';
+  if (project) {
+    projectClause = ' AND project = ?';
+    params.push(project);
+  }
   const visibleRows = db
     .prepare(
       `SELECT id FROM memories WHERE id IN (${placeholders})
          AND (user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')
-         AND superseded_at IS NULL`
+         AND superseded_at IS NULL${tagClause}${categoryClause}${projectClause}`
     )
-    .all(...ids, userId) as { id: string }[];
+    .all(...params) as { id: string }[];
   const visible = new Set(visibleRows.map((r) => r.id));
 
   return candidates.filter((c) => visible.has(c.id)).slice(0, limit);

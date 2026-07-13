@@ -22,13 +22,14 @@ import { projectHealth, archiveStaleMemories } from './tools/health.js';
 import { recordAudit } from './tools/audit.js';
 import { buildUserMap, resolveUserFromToken, extractToken } from './auth.js';
 import { runValidationBatch, startValidationScheduler } from './validation/engine.js';
+import { normalizeProject } from './project-alias.js';
 
 // --- Config ---
 
 const PORT = parseInt(process.env.PORT || '3848', 10);
 
 function resolveProject(paramProject?: string): string {
-  return paramProject || process.env.KODA_DEFAULT_PROJECT || 'default';
+  return normalizeProject(paramProject || process.env.KODA_DEFAULT_PROJECT || 'default');
 }
 
 // Per-user API key resolution lives in ./auth.js (extracted for unit testing).
@@ -93,11 +94,12 @@ function createMcpServer(userId: string): McpServer {
   // memory_search
   server.tool(
     'memory_search',
-    'Search memories using keyword search with optional category and tag filters',
+    'Search memories using keyword search with optional category, tag, and project filters',
     {
       query: z.string().describe('Search query (supports phrases and prefix matching)'),
       category: z.enum(['decision', 'lesson', 'rule', 'preference', 'fact']).optional().describe('Filter by category'),
       tags: z.array(z.string()).optional().describe('Filter by tags'),
+      project: z.string().optional().describe('Filter to a single project (e.g. "sifu-tutor", "ripple-suite")'),
       limit: z.number().optional().describe('Max results (default 10)'),
     },
     async (params) => {
@@ -115,6 +117,7 @@ function createMcpServer(userId: string): McpServer {
     'Get relevant memories for a task using blended keyword + semantic + graph search',
     {
       task_description: z.string().describe('What you are working on'),
+      project: z.string().optional().describe('Filter to a single project (e.g. "sifu-tutor", "ripple-suite")'),
       limit: z.number().optional().describe('Max results (default 15)'),
       graph_depth: z.number().min(1).max(3).optional().describe('Graph traversal depth (default 1, max 3)'),
     },
@@ -314,14 +317,16 @@ function createMcpServer(userId: string): McpServer {
     'project_health',
     'Check memory health: stats, stale memories, environment',
     {
+      project: z.string().optional().describe('Scope stats to a single project (e.g. "sifu-tutor"); omit for everything you can see'),
       auto_archive: z.boolean().optional().describe('Archive memories not accessed in 60+ days (default false)'),
     },
     async (params) => {
       const db = getConnection();
-      const report = projectHealth(db);
+      const project = params.project ? normalizeProject(params.project) : undefined;
+      const report = projectHealth(db, userId, project);
 
       if (params.auto_archive) {
-        const archived = archiveStaleMemories(db);
+        const archived = archiveStaleMemories(db, userId, project);
         return {
           content: [{
             type: 'text' as const,

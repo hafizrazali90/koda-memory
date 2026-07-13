@@ -28,7 +28,14 @@ export interface HealthReport {
   };
 }
 
-export function projectHealth(db: Database.Database): HealthReport {
+// Every query below is scoped to what `userId` can actually see: their own
+// memories, plus 'shared' and 'sifututor' (project-wide). Without this,
+// project_health would leak every user's aggregate stats and flagged memory
+// content to every other user — unlike every other MCP tool, which already
+// enforces this boundary (see memory-search.ts's enrichMemory, for example).
+const VISIBILITY = "(user_id = ? OR user_id = 'shared' OR user_id = 'sifututor')";
+
+export function projectHealth(db: Database.Database, userId: string, project?: string): HealthReport {
   const report: HealthReport = {
     memory: {
       total_memories: 0,
@@ -48,20 +55,25 @@ export function projectHealth(db: Database.Database): HealthReport {
     },
   };
 
+  const projectClause = project ? ' AND project = ?' : '';
+  const projectParams = project ? [project] : [];
+
   // Memory stats
-  const totalMemories = db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number };
+  const totalMemories = db
+    .prepare(`SELECT COUNT(*) as count FROM memories WHERE ${VISIBILITY}${projectClause}`)
+    .get(userId, ...projectParams) as { count: number };
   report.memory.total_memories = totalMemories.count;
 
   const byCategory = db
-    .prepare('SELECT category, COUNT(*) as count FROM memories GROUP BY category')
-    .all() as { category: string; count: number }[];
+    .prepare(`SELECT category, COUNT(*) as count FROM memories WHERE ${VISIBILITY}${projectClause} GROUP BY category`)
+    .all(userId, ...projectParams) as { category: string; count: number }[];
   for (const row of byCategory) {
     report.memory.by_category[row.category] = row.count;
   }
 
   const byConfidence = db
-    .prepare('SELECT confidence, COUNT(*) as count FROM memories GROUP BY confidence')
-    .all() as { confidence: string; count: number }[];
+    .prepare(`SELECT confidence, COUNT(*) as count FROM memories WHERE ${VISIBILITY}${projectClause} GROUP BY confidence`)
+    .all(userId, ...projectParams) as { confidence: string; count: number }[];
   for (const row of byConfidence) {
     report.memory.by_confidence[row.confidence] = row.count;
   }
@@ -70,32 +82,42 @@ export function projectHealth(db: Database.Database): HealthReport {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
   const stale = db
     .prepare(
-      'SELECT COUNT(*) as count FROM memories WHERE last_accessed IS NOT NULL AND last_accessed < ?'
+      `SELECT COUNT(*) as count FROM memories WHERE ${VISIBILITY}${projectClause} AND last_accessed IS NOT NULL AND last_accessed < ?`
     )
-    .get(sixtyDaysAgo) as { count: number };
+    .get(userId, ...projectParams, sixtyDaysAgo) as { count: number };
   report.memory.stale_count = stale.count;
 
   // Memories flagged as potentially outdated, awaiting human review
   const flaggedRows = db
     .prepare(
       `SELECT id, content, flagged_outdated_by, flagged_outdated_at
-       FROM memories WHERE flagged_outdated_at IS NOT NULL
+       FROM memories WHERE ${VISIBILITY}${projectClause} AND flagged_outdated_at IS NOT NULL
        ORDER BY flagged_outdated_at DESC`
     )
-    .all() as FlaggedMemory[];
+    .all(userId, ...projectParams) as FlaggedMemory[];
   report.memory.flagged_count = flaggedRows.length;
   report.memory.flagged_for_review = flaggedRows;
 
   // Superseded memories (fact replaced by a newer one; excluded from search)
   const superseded = db
-    .prepare('SELECT COUNT(*) as count FROM memories WHERE superseded_at IS NOT NULL')
-    .get() as { count: number };
+    .prepare(`SELECT COUNT(*) as count FROM memories WHERE ${VISIBILITY}${projectClause} AND superseded_at IS NOT NULL`)
+    .get(userId, ...projectParams) as { count: number };
   report.memory.superseded_count = superseded.count;
 
-  const sessionCount = db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };
+  const sessionCount = db
+    .prepare(`SELECT COUNT(*) as count FROM sessions WHERE ${VISIBILITY}${projectClause}`)
+    .get(userId, ...projectParams) as { count: number };
   report.memory.total_sessions = sessionCount.count;
 
-  const relCount = db.prepare('SELECT COUNT(*) as count FROM relationships').get() as { count: number };
+  // A relationship is visible if its source memory is visible to the caller.
+  const relProjectClause = project ? ' AND m.project = ?' : '';
+  const relCount = db
+    .prepare(
+      `SELECT COUNT(*) as count FROM relationships r
+       JOIN memories m ON m.id = r.source_id
+       WHERE (m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor')${relProjectClause}`
+    )
+    .get(userId, ...projectParams) as { count: number };
   report.memory.total_relationships = relCount.count;
 
   // DB file size
@@ -118,18 +140,26 @@ export function projectHealth(db: Database.Database): HealthReport {
  * last_accessed) — so a memory a person confirmed recently survives even if it hasn't
  * surfaced in a search. Human-confirmed memories are exempt entirely: a deliberate
  * 'confirmed' verdict should not be undone by passive staleness.
+ *
+ * Scoped to what `userId` can see (own + shared + project) — same boundary as
+ * every other mutating tool (memory_update, memory_forget). Without this, any
+ * user calling project_health({auto_archive:true}) could silently downgrade
+ * the confidence of every OTHER user's personal memories.
  */
-export function archiveStaleMemories(db: Database.Database): { archived: number } {
+export function archiveStaleMemories(db: Database.Database, userId: string, project?: string): { archived: number } {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const projectClause = project ? ' AND project = ?' : '';
+  const projectParams = project ? [project] : [];
 
   const result = db
     .prepare(
       `UPDATE memories SET confidence = 'outdated', updated_at = ?
-       WHERE confidence NOT IN ('outdated', 'confirmed')
+       WHERE ${VISIBILITY}${projectClause}
+         AND confidence NOT IN ('outdated', 'confirmed')
          AND COALESCE(human_reviewed_at, last_accessed) IS NOT NULL
          AND COALESCE(human_reviewed_at, last_accessed) < ?`
     )
-    .run(new Date().toISOString(), sixtyDaysAgo);
+    .run(new Date().toISOString(), userId, ...projectParams, sixtyDaysAgo);
 
   return { archived: result.changes };
 }

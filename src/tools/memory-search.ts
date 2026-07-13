@@ -3,11 +3,13 @@ import { ftsSearch } from '../search/fts.js';
 import { vectorSearch, type VectorResult } from '../search/vector.js';
 import { blendResults, type MemoryMeta } from '../search/blend.js';
 import { withTimeout, vectorTimeoutMs } from '../util/timeout.js';
+import { normalizeProject } from '../project-alias.js';
 
 export interface MemorySearchInput {
   query: string;
   category?: string;
   tags?: string[];
+  project?: string;
   limit?: number;
 }
 
@@ -28,13 +30,14 @@ export async function memorySearch(
   input: MemorySearchInput
 ): Promise<MemorySearchResult[]> {
   const limit = input.limit ?? 10;
+  const project = input.project ? normalizeProject(input.project) : undefined;
 
   // FTS is instant (in-process SQLite). The vector path makes a remote embedding
   // call (~400ms, occasionally many seconds) — cap it and degrade to keyword +
   // graph results if it's slow, so an OpenAI hiccup can't hang the search.
   const [ftsResults, vecResults] = await Promise.all([
-    Promise.resolve(ftsSearch(db, input.query, { category: input.category, tags: input.tags, limit, userId })),
-    withTimeout<VectorResult[]>(vectorSearch(db, input.query, limit, userId), vectorTimeoutMs(), []),
+    Promise.resolve(ftsSearch(db, input.query, { category: input.category, tags: input.tags, project, limit, userId })),
+    withTimeout<VectorResult[]>(vectorSearch(db, input.query, limit, userId, input.tags, input.category, project), vectorTimeoutMs(), []),
   ]);
 
   // Collect metadata (recency + signal weighting) before blending

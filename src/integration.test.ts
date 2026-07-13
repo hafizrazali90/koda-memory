@@ -253,7 +253,7 @@ describe('Koda Memory - Full Integration Test', () => {
   // ── Health Check ──
 
   it('returns project health report', () => {
-    const report = projectHealth(db);
+    const report = projectHealth(db, USER);
     expect(report.memory.total_memories).toBe(9); // 10 stored - 1 forgotten
     expect(report.memory.by_category).toBeDefined();
     expect(report.environment.db_path).toContain('brain.db');
@@ -267,7 +267,7 @@ describe('Koda Memory - Full Integration Test', () => {
     // Backdate a CONFIRMED memory → should NOT archive (P5 exemption)
     db.prepare('UPDATE memories SET last_accessed = ? WHERE id = ?').run(ninetyDaysAgo, id.qa);
 
-    const result = archiveStaleMemories(db);
+    const result = archiveStaleMemories(db, USER);
     expect(result.archived).toBeGreaterThanOrEqual(1);
 
     expect((db.prepare('SELECT confidence FROM memories WHERE id = ?').get(id.auth) as any).confidence).toBe('outdated');
@@ -365,7 +365,7 @@ describe('Koda Memory - flag as outdated', () => {
   it('any team member can flag a project memory they can see', () => {
     const result = memoryFlag(db, 'bob', { id: projectId, reason: 'looks stale' });
     expect(result.flagged).toBe(true);
-    const report = projectHealth(db);
+    const report = projectHealth(db, 'bob');
     expect(report.memory.flagged_count).toBe(1);
     expect(report.memory.flagged_for_review[0].flagged_outdated_by).toBe('bob');
   });
@@ -380,7 +380,7 @@ describe('Koda Memory - flag as outdated', () => {
   it('flag can be cleared', () => {
     const result = memoryFlag(db, 'carol', { id: projectId, clear: true });
     expect(result.flagged).toBe(false);
-    expect(projectHealth(db).memory.flagged_count).toBe(0);
+    expect(projectHealth(db, 'carol').memory.flagged_count).toBe(0);
   });
 
   it('cannot flag a memory you cannot see', () => {
@@ -431,7 +431,7 @@ describe('Koda Memory - supersession', () => {
   });
 
   it('health reports superseded_count', () => {
-    expect(projectHealth(db).memory.superseded_count).toBe(1);
+    expect(projectHealth(db, 'alice').memory.superseded_count).toBe(1);
   });
 });
 
