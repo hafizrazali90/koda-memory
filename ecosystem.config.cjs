@@ -7,6 +7,7 @@ module.exports = {
       PORT: 3848,
       KODA_DB_PATH: '/opt/koda/brain.db',
       KODA_API_KEY: process.env.KODA_API_KEY,
+      KODA_ADMIN_USERS: 'hafiz',
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
       NODE_ENV: 'production',
     },
