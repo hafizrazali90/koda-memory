@@ -9,10 +9,11 @@ Durable knowledge for this repo lives in Koda itself (project tag `koda-memory`)
 - Security: admin-gate bypass fixed, `project_health`/`auto_archive` cross-user leak fixed, 11/12 npm audit vulnerabilities patched (1 remaining is low-severity, Windows-only, unreachable in this deployment).
 - Search: `vectorSearch()` now respects `tags`/`category`/`project` (previously silently ignored whenever FTS had zero hits). `project` added as a first-class filter across `memory_search`/`memory_context`/`project_health`, with `normalizeProject()` folding known naming drift.
 - Test suite: 268/268 passing locally and on the server.
+- **Resolved same day**: the `devtools` (178.105.120.34) diverged Koda instance was reconciled into KVM8 via issue #8 / PR #9 (`scripts/reconcile-databases.ts`) — devtools-only memories preserved, devtools' pm2 process stopped (backups retained). KVM8 is now the sole canonical instance.
 
 ## Pending Work
 
-- **Open, needs a decision, not auto-fixable**: a second Koda instance on `devtools` (178.105.120.34) is frozen since ~2026-06-22, running pre-fix code, with diverged user data (see `docs/CODEX-HANDOFF-devtools-instance.md`). Codex has been briefed; awaiting Hafiz's call on canonical server + data merge.
+None known as of 2026-07-13.
 
 ## Quick Rules
 
@@ -23,6 +24,5 @@ Durable knowledge for this repo lives in Koda itself (project tag `koda-memory`)
 ## Key References
 
 - Koda project tag: `koda-memory`
-- Fixed instance: `koda.tutorla.tech` / KVM8 (`ssh staging`)
-- Diverged instance: `devtools` (178.105.120.34) — see handoff doc
-- `docs/CODEX-HANDOFF-devtools-instance.md`
+- Canonical instance: `koda.tutorla.tech` / KVM8 (`ssh staging`)
+- `docs/CODEX-HANDOFF-devtools-instance.md` — historical record of the devtools divergence and its resolution

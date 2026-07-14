@@ -1,5 +1,9 @@
 # Codex handoff — reconcile the `devtools` Koda instance
 
+**RESOLVED 2026-07-13.** Issue #8 / PR #9 (`scripts/reconcile-databases.ts`) executed the plan below: devtools-only memories (including `shahrooz`'s) merged into KVM8, verified, and `devtools`' koda-memory pm2 process stopped (not deleted — rollback backups retained at `/opt/koda/backups/` on that host). KVM8 (`koda.tutorla.tech`) is now the sole canonical instance. Kept below as a historical record of the original problem and the safety approach that resolved it.
+
+---
+
 Written 2026-07-13 after a full audit/fix pass on the KVM8 Koda instance. Paste this to Codex as-is.
 
 **Goal:** Reconcile the `devtools` Koda memory server (178.105.120.34:3848), which has silently diverged from the actively-maintained instance and is running stale, buggy code.
