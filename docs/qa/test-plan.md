@@ -232,6 +232,9 @@ Run from KVM8 after `pm2 reload koda-memory`:
 # Confirm PM2 status
 pm2 list | grep koda-memory
 
+# Confirm the PM2 process actually opened Koda's port
+curl -sf http://127.0.0.1:3848/health | jq .
+
 # Confirm correct commit
 cd /opt/koda/app && git log --oneline -1
 
@@ -262,6 +265,7 @@ pm2 env koda-memory 2>/dev/null | grep KODA_DB_PATH || echo "KODA_DB_PATH not se
 | S1/P1 | All auth.test.ts | `auth.test.ts` |
 | S1/P1 | All integration.test.ts | `integration.test.ts` |
 | S1/P1 | All concurrency.test.ts | `concurrency.test.ts` |
+| S1/P1 | Direct Node + PM2 wrapper starts the server; test imports do not | `index-entry.test.ts` |
 | S2/P1 | TC-API-005 Pagination | `admin-api.test.ts` |
 | S2/P1 | TC-API-006 Filtering | `admin-api.test.ts` |
 | S2/P1 | TC-API-007 Memory detail | `admin-api.test.ts` |
