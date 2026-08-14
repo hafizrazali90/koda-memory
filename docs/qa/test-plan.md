@@ -2,13 +2,13 @@
 
 | Field | Value |
 |---|---|
-| Last updated | 2026-06-19 |
+| Last updated | 2026-08-14 |
 | Owner | Hafiz (CTO) |
 | Live URL | `https://koda.tutorla.tech/dashboard/` |
 | Server | KVM8 — 72.62.251.97, SSH alias `staging` |
 | App path | `/opt/koda/app` |
 | DB path | `/opt/koda/brain.db` |
-| PM2 name | `koda` |
+| PM2 name | `koda-memory` |
 
 ---
 
@@ -40,6 +40,7 @@ silently crash on render, producing a blank white screen with no console error.
 | `src/concurrency.test.ts` | Concurrent write correctness |
 | `src/quality.test.ts` | Search recall quality scoring |
 | `src/load.test.ts` | FTS latency under 10k memory load |
+| `src/mcp-http.test.ts` | Real HTTP MCP negotiation, stateless behavior, auth, isolation, and retry preflight |
 
 ---
 
@@ -48,6 +49,7 @@ silently crash on render, producing a blank white screen with no console error.
 | Layer | Test type | Coverage |
 |---|---|---|
 | MCP tools (14 tools via `/mcp`) | `integration.test.ts` (Vitest) | memory_store, recall, search, context, relate, update, forget, flag, session_start/end/list, project_health, validation_run |
+| MCP HTTP transport | `mcp-http.test.ts` (Vitest) | Modern 2026 negotiation, stateless 2025 fallback, no persistent GET/session ID, auth rejection, concurrent user isolation, ambiguous-write preflight |
 | Admin REST API (9 endpoints) | `admin-api.test.ts` (Vitest) | stats, memories list, memory detail, soft-delete, restore, graph, validation queue, audit, search-gaps |
 | API field name contract | `admin-api.test.ts` TC-API-003 | Asserts every field in Stats response matches `dashboard/src/types.ts` |
 | Auth security | `auth.test.ts` (Vitest) | Per-user isolation, token resolution, dev-mode fallback |
@@ -100,7 +102,8 @@ silently crash on render, producing a blank white screen with no console error.
 | `concurrency.test.ts` | 6 | 6 | 0 | — |
 | `load.test.ts` | 4 | 4 | 0 | FTS P99 0.27ms at 10k rows |
 | `admin-api.test.ts` | ~55 | — | — | NEW — runs against real HTTP server |
-| **Total** | **164+** | — | — | — |
+| `mcp-http.test.ts` | 9 | 9 | 0 | Real stateless HTTP transport and official v2 client; includes stale-session recovery and 50 independent reads |
+| **Total** | **281** | **281** | **0** | 20 test files; no unhandled server-start errors |
 
 ---
 
@@ -125,6 +128,7 @@ Minimum assertions that MUST pass (cannot be risk-accepted):
 | `auth.test.ts` all | Per-user isolation must hold |
 | `integration.test.ts` all | Core MCP tools must not regress |
 | `concurrency.test.ts` all | Must not deadlock under concurrent load |
+| `mcp-http.test.ts` all | Prevents idle session regressions, protocol drift, and cross-user leakage |
 
 ### Gate 2 — API smoke tests (curl, ~3 min)
 
@@ -222,11 +226,11 @@ TC-AUTH-005, TC-AUTH-006, TC-AUTH-007, TC-STATS-002, TC-STATS-003, TC-STATS-006,
 
 ### Gate 4 — Post-deploy verification
 
-Run from KVM8 after `pm2 reload koda`:
+Run from KVM8 after `pm2 reload koda-memory`:
 
 ```bash
 # Confirm PM2 status
-pm2 list | grep koda
+pm2 list | grep koda-memory
 
 # Confirm correct commit
 cd /opt/koda/app && git log --oneline -1
@@ -239,7 +243,7 @@ ls -la /opt/koda/app/dashboard/dist/index.html
 curl -sf https://koda.tutorla.tech/health | jq .
 
 # Confirm DB path is correct (not a wrong/temp path)
-pm2 env koda 2>/dev/null | grep KODA_DB_PATH || echo "KODA_DB_PATH not set — check ecosystem.config.cjs"
+pm2 env koda-memory 2>/dev/null | grep KODA_DB_PATH || echo "KODA_DB_PATH not set — check ecosystem.config.cjs"
 ```
 
 ---
@@ -301,9 +305,9 @@ pm2 env koda 2>/dev/null | grep KODA_DB_PATH || echo "KODA_DB_PATH not set — c
 | G-02 | Dashboard `types.ts` not imported/validated by server build | Type drift possible | High | Implement shared types package |
 | G-03 | ~~Admin API field names not tested~~ | ~~S1/P1~~ | ~~High~~ | **CLOSED** — `admin-api.test.ts` TC-API-003/004 |
 | G-04 | Validation engine LLM path untested (no OPENAI_API_KEY in CI) | Detector silently skipped | Medium | Mock LLM response in test |
-| G-05 | No test for MCP tool responses through real HTTP (only tool-function level) | Protocol mismatch | Medium | Add `mcp-protocol.test.ts` |
+| G-05 | ~~No test for MCP tool responses through real HTTP (only tool-function level)~~ | ~~Protocol mismatch~~ | ~~Medium~~ | **CLOSED** — `mcp-http.test.ts` covers modern and legacy real HTTP calls |
 | G-06 | Dashboard build not part of automated CI | Vite config errors slip through | Medium | Add `npm run build` to CI |
-| G-07 | No load test for concurrent MCP sessions (SSE/Streamable) | Unknown session limit | Low | When traffic grows |
+| G-07 | ~~No load test for concurrent MCP sessions (SSE/Streamable)~~ | ~~Unknown session limit~~ | ~~Low~~ | **CLOSED** — sessions removed; concurrent per-request user isolation is covered by `mcp-http.test.ts` |
 
 ### Closing G-01 (Playwright) — recommended next step
 
