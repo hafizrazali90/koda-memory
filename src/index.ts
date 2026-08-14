@@ -3,10 +3,11 @@ import type { Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { toNodeHandler } from '@modelcontextprotocol/node';
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import type { AuthInfo } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { getConnection, closeConnection } from './db/connection.js';
 import { memoryStore } from './tools/memory-store.js';
@@ -20,16 +21,29 @@ import { memoryFlag } from './tools/memory-flag.js';
 import { sessionStart, sessionEnd, sessionList } from './tools/session.js';
 import { projectHealth, archiveStaleMemories } from './tools/health.js';
 import { recordAudit } from './tools/audit.js';
-import { buildUserMap, resolveUserFromToken, extractToken, verifyPassword, hashPassword, generateApiKey, buildAdminSet } from './auth.js';
+import {
+  buildUserMap,
+  resolveUserFromToken,
+  extractToken,
+  verifyPassword,
+  hashPassword,
+  generateApiKey,
+  buildAdminSet,
+} from './auth.js';
 import { normalizeProject } from './project-alias.js';
-import { runValidationBatch, startValidationScheduler } from './validation/engine.js';
+import {
+  runValidationBatch,
+  startValidationScheduler,
+} from './validation/engine.js';
 
 // --- Config ---
 
 const PORT = parseInt(process.env.PORT || '3848', 10);
 
 function resolveProject(paramProject?: string): string {
-  return normalizeProject(paramProject || process.env.KODA_DEFAULT_PROJECT || 'default');
+  return normalizeProject(
+    paramProject || process.env.KODA_DEFAULT_PROJECT || 'default',
+  );
 }
 
 // Per-user API key resolution lives in ./auth.js (extracted for unit testing).
@@ -38,116 +52,182 @@ const ADMIN_SET = buildAdminSet();
 
 // --- MCP Server factory ---
 
-function createMcpServer(userId: string): McpServer {
+function createMcpServer(
+  userId: string,
+  dbGetter: () => Database.Database = getConnection,
+): McpServer {
   const server = new McpServer({
     name: 'koda-memory',
     version: '0.1.0',
   });
 
   // memory_store
-  server.tool(
+  server.registerTool(
     'memory_store',
-    'Save a new memory (decision, lesson, rule, preference, or fact)',
     {
-      content: z.string().describe('The memory content'),
-      category: z.enum(['decision', 'lesson', 'rule', 'preference', 'fact']).describe('Memory category'),
-      why: z.string().optional().describe('Why this matters'),
-      tags: z.array(z.string()).optional().describe('Tags for filtering'),
-      source: z.enum(['user-stated', 'auto-captured', 'correction']).optional().describe('How this was captured'),
-      project: z.string().optional().describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
-      scope: z.enum(['personal', 'project']).optional().describe(
-        'personal (default) = only you can see it; project = visible to all Sifututor team members'
-      ),
+      description:
+        'Save a new memory (decision, lesson, rule, preference, or fact)',
+      inputSchema: z.object({
+        content: z.string().describe('The memory content'),
+        category: z
+          .enum(['decision', 'lesson', 'rule', 'preference', 'fact'])
+          .describe('Memory category'),
+        why: z.string().optional().describe('Why this matters'),
+        tags: z.array(z.string()).optional().describe('Tags for filtering'),
+        source: z
+          .enum(['user-stated', 'auto-captured', 'correction'])
+          .optional()
+          .describe('How this was captured'),
+        project: z
+          .string()
+          .optional()
+          .describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
+        scope: z
+          .enum(['personal', 'project'])
+          .optional()
+          .describe(
+            'personal (default) = only you can see it; project = visible to all Sifututor team members',
+          ),
+      }),
     },
     async (params) => {
-      const db = getConnection();
+      const db = dbGetter();
       const project = resolveProject(params.project);
       const effectiveUserId = params.scope === 'project' ? 'sifututor' : userId;
-      const result = await memoryStore(db, project, effectiveUserId, params, userId);
+      const result = await memoryStore(
+        db,
+        project,
+        effectiveUserId,
+        params,
+        userId,
+      );
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   // memory_recall
-  server.tool(
+  server.registerTool(
     'memory_recall',
-    'Retrieve a specific memory by its ID',
     {
-      id: z.string().describe('Memory ID (e.g. mem_0001)'),
+      description: 'Retrieve a specific memory by its ID',
+      inputSchema: z.object({
+        id: z.string().describe('Memory ID (e.g. mem_0001)'),
+      }),
     },
     async (params) => {
-      const db = getConnection();
+      const db = dbGetter();
       const memory = memoryRecall(db, userId, params.id);
       if (!memory) {
         return {
-          content: [{ type: 'text' as const, text: `Memory ${params.id} not found` }],
+          content: [
+            { type: 'text' as const, text: `Memory ${params.id} not found` },
+          ],
           isError: true,
         };
       }
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(memory, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   // memory_search
-  server.tool(
+  server.registerTool(
     'memory_search',
-    'Search memories using keyword search with optional category, tag, and project filters',
     {
-      query: z.string().describe('Search query (supports phrases and prefix matching)'),
-      category: z.enum(['decision', 'lesson', 'rule', 'preference', 'fact']).optional().describe('Filter by category'),
-      tags: z.array(z.string()).optional().describe('Filter by tags'),
-      project: z.string().optional().describe('Filter to a single project (e.g. "sifu-tutor", "ripple-suite")'),
-      limit: z.number().optional().describe('Max results (default 10)'),
+      description:
+        'Search memories using keyword search with optional category, tag, and project filters',
+      inputSchema: z.object({
+        query: z
+          .string()
+          .describe('Search query (supports phrases and prefix matching)'),
+        category: z
+          .enum(['decision', 'lesson', 'rule', 'preference', 'fact'])
+          .optional()
+          .describe('Filter by category'),
+        tags: z.array(z.string()).optional().describe('Filter by tags'),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            'Filter to a single project (e.g. "sifu-tutor", "ripple-suite")',
+          ),
+        limit: z.number().optional().describe('Max results (default 10)'),
+      }),
     },
     async (params) => {
-      const db = getConnection();
+      const db = dbGetter();
       const results = await memorySearch(db, userId, params);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(results, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(results, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   // memory_context
-  server.tool(
+  server.registerTool(
     'memory_context',
-    'Get relevant memories for a task using blended keyword + semantic + graph search',
     {
-      task_description: z.string().describe('What you are working on'),
-      project: z.string().optional().describe('Filter to a single project (e.g. "sifu-tutor", "ripple-suite")'),
-      limit: z.number().optional().describe('Max results (default 15)'),
-      graph_depth: z.number().min(1).max(3).optional().describe('Graph traversal depth (default 1, max 3)'),
+      description:
+        'Get relevant memories for a task using blended keyword + semantic + graph search',
+      inputSchema: z.object({
+        task_description: z.string().describe('What you are working on'),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            'Filter to a single project (e.g. "sifu-tutor", "ripple-suite")',
+          ),
+        limit: z.number().optional().describe('Max results (default 15)'),
+        graph_depth: z
+          .number()
+          .min(1)
+          .max(3)
+          .optional()
+          .describe('Graph traversal depth (default 1, max 3)'),
+      }),
     },
     async (params) => {
-      const db = getConnection();
+      const db = dbGetter();
       const result = await memoryContext(db, userId, params);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   // memory_relate
-  server.tool(
+  server.registerTool(
     'memory_relate',
-    'Create a relationship between two memories (relates-to, supersedes, contradicts, depends-on)',
     {
-      source_id: z.string().describe('Source memory ID'),
-      target_id: z.string().describe('Target memory ID'),
-      relation_type: z
-        .enum(['relates-to', 'supersedes', 'contradicts', 'depends-on'])
-        .describe('Type of relationship'),
+      description:
+        'Create a relationship between two memories (relates-to, supersedes, contradicts, depends-on)',
+      inputSchema: z.object({
+        source_id: z.string().describe('Source memory ID'),
+        target_id: z.string().describe('Target memory ID'),
+        relation_type: z
+          .enum(['relates-to', 'supersedes', 'contradicts', 'depends-on'])
+          .describe('Type of relationship'),
+      }),
     },
     async (params) => {
       try {
-        const db = getConnection();
+        const db = dbGetter();
         const result = memoryRelate(db, userId, params);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [
+            { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+          ],
         };
       } catch (error: any) {
         return {
@@ -155,27 +235,41 @@ function createMcpServer(userId: string): McpServer {
           isError: true,
         };
       }
-    }
+    },
   );
 
   // memory_update
-  server.tool(
+  server.registerTool(
     'memory_update',
-    'Update an existing memory (content, why, tags, confidence, or source)',
     {
-      id: z.string().describe('Memory ID to update'),
-      content: z.string().optional().describe('New content'),
-      why: z.string().optional().describe('New rationale'),
-      tags: z.array(z.string()).optional().describe('New tags (replaces existing)'),
-      confidence: z.enum(['confirmed', 'inferred', 'outdated']).optional().describe('New confidence level'),
-      source: z.enum(['user-stated', 'auto-captured', 'correction']).optional().describe('How this was captured'),
+      description:
+        'Update an existing memory (content, why, tags, confidence, or source)',
+      inputSchema: z.object({
+        id: z.string().describe('Memory ID to update'),
+        content: z.string().optional().describe('New content'),
+        why: z.string().optional().describe('New rationale'),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe('New tags (replaces existing)'),
+        confidence: z
+          .enum(['confirmed', 'inferred', 'outdated'])
+          .optional()
+          .describe('New confidence level'),
+        source: z
+          .enum(['user-stated', 'auto-captured', 'correction'])
+          .optional()
+          .describe('How this was captured'),
+      }),
     },
     async (params) => {
       try {
-        const db = getConnection();
+        const db = dbGetter();
         const result = await memoryUpdate(db, userId, params);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [
+            { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+          ],
         };
       } catch (error: any) {
         return {
@@ -183,22 +277,27 @@ function createMcpServer(userId: string): McpServer {
           isError: true,
         };
       }
-    }
+    },
   );
 
   // memory_forget
-  server.tool(
+  server.registerTool(
     'memory_forget',
-    'Remove a memory and all its associated data (tags, relationships, embeddings)',
     {
-      id: z.string().describe('Memory ID to remove'),
+      description:
+        'Remove a memory and all its associated data (tags, relationships, embeddings)',
+      inputSchema: z.object({
+        id: z.string().describe('Memory ID to remove'),
+      }),
     },
     async (params) => {
       try {
-        const db = getConnection();
+        const db = dbGetter();
         const result = memoryForget(db, userId, params.id);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [
+            { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+          ],
         };
       } catch (error: any) {
         return {
@@ -206,24 +305,32 @@ function createMcpServer(userId: string): McpServer {
           isError: true,
         };
       }
-    }
+    },
   );
 
   // memory_flag
-  server.tool(
+  server.registerTool(
     'memory_flag',
-    'Flag a shared/project memory as potentially outdated for human review (or clear a flag). Does not delete or change confidence. Any team member can flag any memory they can see.',
     {
-      id: z.string().describe('Memory ID to flag'),
-      reason: z.string().optional().describe('Why it looks outdated'),
-      clear: z.boolean().optional().describe('Set true to remove an existing flag'),
+      description:
+        'Flag a shared/project memory as potentially outdated for human review (or clear a flag). Does not delete or change confidence. Any team member can flag any memory they can see.',
+      inputSchema: z.object({
+        id: z.string().describe('Memory ID to flag'),
+        reason: z.string().optional().describe('Why it looks outdated'),
+        clear: z
+          .boolean()
+          .optional()
+          .describe('Set true to remove an existing flag'),
+      }),
     },
     async (params) => {
       try {
-        const db = getConnection();
+        const db = dbGetter();
         const result = memoryFlag(db, userId, params);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [
+            { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+          ],
         };
       } catch (error: any) {
         return {
@@ -231,60 +338,84 @@ function createMcpServer(userId: string): McpServer {
           isError: true,
         };
       }
-    }
+    },
   );
 
   // memory_init — not available in remote mode
-  server.tool(
+  server.registerTool(
     'memory_init',
-    'Scan a project codebase and build initial memories (requires local access)',
     {
-      project_path: z.string().optional().describe('Path to project root'),
+      description:
+        'Scan a project codebase and build initial memories (requires local access)',
+      inputSchema: z.object({
+        project_path: z.string().optional().describe('Path to project root'),
+      }),
     },
     async () => {
       return {
-        content: [{
-          type: 'text' as const,
-          text: 'memory_init is not available in remote mode. It requires local filesystem access to scan CLAUDE.md, git history, and schema files. Run koda-memory locally with stdio transport for initial project scans.',
-        }],
+        content: [
+          {
+            type: 'text' as const,
+            text: 'memory_init is not available in remote mode. It requires local filesystem access to scan CLAUDE.md, git history, and schema files. Run koda-memory locally with stdio transport for initial project scans.',
+          },
+        ],
         isError: true,
       };
-    }
+    },
   );
 
   // session_start
-  server.tool(
+  server.registerTool(
     'session_start',
-    'Start a new work session, returns recent sessions and important memories',
     {
-      project: z.string().optional().describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
+      description:
+        'Start a new work session, returns recent sessions and important memories',
+      inputSchema: z.object({
+        project: z
+          .string()
+          .optional()
+          .describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
+      }),
     },
     async (params) => {
-      const db = getConnection();
+      const db = dbGetter();
       const project = resolveProject(params.project);
       const result = sessionStart(db, project, userId);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   // session_end
-  server.tool(
+  server.registerTool(
     'session_end',
-    'End a work session with a summary of what was done',
     {
-      session_id: z.string().describe('Session ID from session_start'),
-      summary: z.string().describe('What was accomplished'),
-      branch: z.string().optional().describe('Git branch worked on'),
-      commit_count: z.number().optional().describe('Number of commits made'),
+      description: 'End a work session with a summary of what was done',
+      inputSchema: z.object({
+        session_id: z.string().describe('Session ID from session_start'),
+        summary: z.string().describe('What was accomplished'),
+        branch: z.string().optional().describe('Git branch worked on'),
+        commit_count: z.number().optional().describe('Number of commits made'),
+      }),
     },
     async (params) => {
       try {
-        const db = getConnection();
-        const result = sessionEnd(db, userId, params.session_id, params.summary, params.branch, params.commit_count);
+        const db = dbGetter();
+        const result = sessionEnd(
+          db,
+          userId,
+          params.session_id,
+          params.summary,
+          params.branch,
+          params.commit_count,
+        );
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [
+            { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+          ],
         };
       } catch (error: any) {
         return {
@@ -292,70 +423,110 @@ function createMcpServer(userId: string): McpServer {
           isError: true,
         };
       }
-    }
+    },
   );
 
   // session_list
-  server.tool(
+  server.registerTool(
     'session_list',
-    'List recent work sessions for a project',
     {
-      project: z.string().optional().describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
-      limit: z.number().optional().describe('Max sessions to return (default 10)'),
+      description: 'List recent work sessions for a project',
+      inputSchema: z.object({
+        project: z
+          .string()
+          .optional()
+          .describe('Project name (defaults to KODA_DEFAULT_PROJECT)'),
+        limit: z
+          .number()
+          .optional()
+          .describe('Max sessions to return (default 10)'),
+      }),
     },
     async (params) => {
-      const db = getConnection();
+      const db = dbGetter();
       const project = resolveProject(params.project);
       const result = sessionList(db, project, params.limit, userId);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   // project_health
-  server.tool(
+  server.registerTool(
     'project_health',
-    'Check memory health: stats, stale memories, environment',
     {
-      project: z.string().optional().describe('Scope stats to a single project (e.g. "sifu-tutor"); omit for everything you can see'),
-      auto_archive: z.boolean().optional().describe('Archive memories not accessed in 60+ days (default false)'),
+      description: 'Check memory health: stats, stale memories, environment',
+      inputSchema: z.object({
+        project: z
+          .string()
+          .optional()
+          .describe(
+            'Scope stats to a single project (e.g. "sifu-tutor"); omit for everything you can see',
+          ),
+        auto_archive: z
+          .boolean()
+          .optional()
+          .describe(
+            'Archive memories not accessed in 60+ days (default false)',
+          ),
+      }),
     },
     async (params) => {
-      const db = getConnection();
-      const project = params.project ? normalizeProject(params.project) : undefined;
+      const db = dbGetter();
+      const project = params.project
+        ? normalizeProject(params.project)
+        : undefined;
       const report = projectHealth(db, userId, project);
 
       if (params.auto_archive) {
         const archived = archiveStaleMemories(db, userId, project);
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ ...report, archived: archived.archived }, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                { ...report, archived: archived.archived },
+                null,
+                2,
+              ),
+            },
+          ],
         };
       }
 
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(report, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(report, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   // validation_run
-  server.tool(
+  server.registerTool(
     'validation_run',
-    'Run the background validation pipeline (duplicate + contradiction detection). Returns batch results.',
     {
-      batch_size: z.number().optional().describe('Number of jobs to process in this batch (default 10)'),
+      description:
+        'Run the background validation pipeline (duplicate + contradiction detection). Returns batch results.',
+      inputSchema: z.object({
+        batch_size: z
+          .number()
+          .optional()
+          .describe('Number of jobs to process in this batch (default 10)'),
+      }),
     },
     async (params) => {
-      const db = getConnection();
+      const db = dbGetter();
       const result = await runValidationBatch(db, userId, params.batch_size);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        content: [
+          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+        ],
       };
-    }
+    },
   );
 
   return server;
@@ -434,11 +605,18 @@ export function createHttpServer(opts?: {
   const adminSet = opts?.adminSet ?? ADMIN_SET;
   const dbGetter = opts?.dbGetter ?? getConnection;
 
-  // Per-server session state — each createHttpServer() call gets its own maps
-  const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
-  const sseTransports = new Map<string, SSEServerTransport>();
+  const mcpHandler = createMcpHandler(
+    ({ authInfo }) => createMcpServer(authInfo?.clientId ?? '', dbGetter),
+    {
+      legacy: 'stateless',
+      onerror: (error) => console.error('MCP request failed:', error),
+    },
+  );
+  const handleMcpRequest = toNodeHandler(mcpHandler, {
+    onerror: (error) => console.error('MCP adapter failed:', error),
+  });
 
-  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     // Root redirect → dashboard
@@ -543,78 +721,15 @@ export function createHttpServer(opts?: {
       return;
     }
 
-    // === SSE Transport (legacy) ===
-    if (url.pathname === '/sse' && req.method === 'GET') {
-      const messagesPath = process.env.KODA_BASE_PATH ? `${process.env.KODA_BASE_PATH}/messages` : '/messages';
-      const transport = new SSEServerTransport(messagesPath, res);
-      const mcpServer = createMcpServer(userId);
-
-      transport.onclose = () => {
-        sseTransports.delete(transport.sessionId);
-      };
-
-      await mcpServer.connect(transport);
-      sseTransports.set(transport.sessionId, transport);
-      return;
-    }
-
-    if (url.pathname === '/messages' && req.method === 'POST') {
-      const sessionId = url.searchParams.get('sessionId');
-      if (!sessionId || !sseTransports.has(sessionId)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid or missing session ID' }));
-        return;
-      }
-
-      const transport = sseTransports.get(sessionId)!;
-      await transport.handlePostMessage(req, res);
-      return;
-    }
-
-    // === Streamable HTTP Transport (modern) ===
+    // === Stateless MCP HTTP Transport ===
     if (url.pathname === '/mcp') {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-      if (req.method === 'GET' || req.method === 'DELETE') {
-        if (sessionId && streamableTransports.has(sessionId)) {
-          const transport = streamableTransports.get(sessionId)!;
-          await transport.handleRequest(req, res);
-        } else if (req.method === 'GET') {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing or invalid session ID' }));
-        } else {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Session not found' }));
-        }
-        return;
-      }
-
-      if (req.method === 'POST') {
-        if (sessionId && streamableTransports.has(sessionId)) {
-          const transport = streamableTransports.get(sessionId)!;
-          await transport.handleRequest(req, res);
-          return;
-        }
-
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-        });
-
-        transport.onclose = () => {
-          if (transport.sessionId) {
-            streamableTransports.delete(transport.sessionId);
-          }
-        };
-
-        const mcpServer = createMcpServer(userId);
-        await mcpServer.connect(transport);
-        await transport.handleRequest(req, res);
-
-        if (transport.sessionId) {
-          streamableTransports.set(transport.sessionId, transport);
-        }
-        return;
-      }
+      (req as IncomingMessage & { auth?: AuthInfo }).auth = {
+        token: authToken ?? '',
+        clientId: userId,
+        scopes: [],
+      };
+      await handleMcpRequest(req, res);
+      return;
     }
 
     // === Admin REST API ===
@@ -1100,6 +1215,12 @@ export function createHttpServer(opts?: {
     res.writeHead(404);
     res.end('Not Found');
   });
+
+  httpServer.on('close', () => {
+    void mcpHandler.close();
+  });
+
+  return httpServer;
 }
 
 // --- Entry point ---
@@ -1126,8 +1247,7 @@ async function main() {
   const server = createHttpServer();
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Koda Memory server listening on http://0.0.0.0:${PORT}`);
-    console.log(`SSE endpoint: GET /sse + POST /messages`);
-    console.log(`Streamable HTTP endpoint: POST /mcp`);
+    console.log(`Stateless MCP HTTP endpoint: POST /mcp`);
     console.log(`Auth: ${USER_MAP.size > 0 ? 'enabled' : 'DISABLED (no keys set — dev mode)'}`);
     console.log(`DB: ${process.env.KODA_DB_PATH || '(default: .koda/brain.db)'}`);
     console.log(`Dashboard: http://localhost:${PORT}/dashboard`);
@@ -1137,18 +1257,24 @@ async function main() {
   startValidationScheduler(getConnection());
 }
 
-main().catch((error) => {
-  console.error('Failed to start Koda Memory server:', error);
-  process.exit(1);
-});
+const isMainModule = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
 
-// Clean shutdown
-process.on('SIGINT', () => {
-  closeConnection();
-  process.exit(0);
-});
+if (isMainModule) {
+  main().catch((error) => {
+    console.error('Failed to start Koda Memory server:', error);
+    process.exit(1);
+  });
 
-process.on('SIGTERM', () => {
-  closeConnection();
-  process.exit(0);
-});
+  // Clean shutdown
+  process.on('SIGINT', () => {
+    closeConnection();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    closeConnection();
+    process.exit(0);
+  });
+}

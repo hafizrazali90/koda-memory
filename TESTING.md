@@ -11,7 +11,7 @@
 npm test
 ```
 
-**Expected**: 7 test files, ~115+ tests, 0 failures, 0 skipped.
+**Expected**: 20 test files, 281+ tests, 0 failures, 0 skipped, and 0 unhandled errors.
 
 ---
 
@@ -26,6 +26,7 @@ npm test
 | `src/quality.test.ts` | BM25 + graph search recall ≥70% at 5 results | After search changes |
 | `src/load.test.ts` | FTS P99 latency <100ms at 10k rows | After query changes |
 | `src/admin-api.test.ts` | Admin REST API field names + HTTP contract | After any API or types.ts change |
+| `src/mcp-http.test.ts` | Stateless MCP transport, modern/legacy negotiation, auth, isolation, and ambiguous-write preflight | After any MCP transport or SDK change |
 
 ---
 
@@ -65,7 +66,7 @@ All three must succeed with exit code 0 before any deploy.
 
 ## Deploy checklist
 
-Copy and check each box before running `pm2 reload koda`:
+Copy and check each box before running `pm2 reload koda-memory`:
 
 ```
 Pre-deploy:
@@ -77,6 +78,8 @@ Post-deploy (run from any machine with curl):
 [ ] curl https://koda.tutorla.tech/health  → {"status":"ok"}
 [ ] curl -H "Authorization: Bearer $KEY" https://koda.tutorla.tech/admin/stats | jq .total_memories  → number
 [ ] curl -H "Authorization: Bearer $KEY" https://koda.tutorla.tech/admin/memories?limit=1 | jq '{memories_count:(.memories|length),pages}' → {memories_count:1,pages:N}
+[ ] Authenticated MCP initialize returns 200 without an `Mcp-Session-Id` response header
+[ ] Authenticated `GET /mcp` returns 405 instead of opening a permanent SSE session
 
 UI smoke (open browser, check console for errors first):
 [ ] https://koda.tutorla.tech/dashboard/ → login page renders (TC-AUTH-001)
@@ -84,6 +87,13 @@ UI smoke (open browser, check console for errors first):
 [ ] Correct key → Overview with stat cards (TC-AUTH-004)  ← PRIMARY REGRESSION GUARD
 [ ] All 5 nav pages render without blank screen (TC-NAV-003)
 ```
+
+### Write timeout safety
+
+Stateless transport removes the dead idle session, but any network can still
+drop a response after a write has already reached SQLite. Never automatically
+retry `memory_store` after a timeout. Search for the exact content first; only
+store again when the preflight proves the original write did not commit.
 
 ---
 
@@ -157,4 +167,4 @@ to manually clean anything.
 | `Field 'total_memories' not found` | API response shape changed | Update `types.ts` AND the test assertions together |
 | `npm run build` fails with TS error | Type mismatch introduced | Fix the TypeScript error — don't use `any` to suppress it |
 | Dashboard build fails | Vite config or import error | Run `cd dashboard && npm run build` locally first |
-| `pm2 list` shows Koda in errored state | App crashed on startup | Check `pm2 logs koda --lines 50` on KVM8 |
+| `pm2 list` shows Koda in errored state | App crashed on startup | Check `pm2 logs koda-memory --lines 50` on KVM8 |
