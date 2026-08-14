@@ -1257,9 +1257,18 @@ async function main() {
   startValidationScheduler(getConnection());
 }
 
-const isMainModule = process.argv[1]
-  ? import.meta.url === pathToFileURL(process.argv[1]).href
-  : false;
+export function shouldStartMainModule(
+  moduleUrl: string,
+  argvEntry = process.argv[1],
+  pm2Entry = process.env.pm_exec_path,
+): boolean {
+  return [argvEntry, pm2Entry].some(
+    (entryPath) =>
+      entryPath !== undefined && moduleUrl === pathToFileURL(entryPath).href,
+  );
+}
+
+const isMainModule = shouldStartMainModule(import.meta.url);
 
 if (isMainModule) {
   main().catch((error) => {

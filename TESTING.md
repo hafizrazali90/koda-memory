@@ -11,7 +11,7 @@
 npm test
 ```
 
-**Expected**: 20 test files, 281+ tests, 0 failures, 0 skipped, and 0 unhandled errors.
+**Expected**: 21 test files, 284+ tests, 0 failures, 0 skipped, and 0 unhandled errors.
 
 ---
 
@@ -27,6 +27,7 @@ npm test
 | `src/load.test.ts` | FTS P99 latency <100ms at 10k rows | After query changes |
 | `src/admin-api.test.ts` | Admin REST API field names + HTTP contract | After any API or types.ts change |
 | `src/mcp-http.test.ts` | Stateless MCP transport, modern/legacy negotiation, auth, isolation, and ambiguous-write preflight | After any MCP transport or SDK change |
+| `src/index-entry.test.ts` | Direct Node and PM2-wrapper server entry detection without import side effects | After any server startup or process-manager change |
 
 ---
 
@@ -75,6 +76,7 @@ Pre-deploy:
 [ ] npm test  exits 0 (all tests green)
 
 Post-deploy (run from any machine with curl):
+[ ] PM2 reload creates a listener on local port 3848 (not only an `online` process)
 [ ] curl https://koda.tutorla.tech/health  → {"status":"ok"}
 [ ] curl -H "Authorization: Bearer $KEY" https://koda.tutorla.tech/admin/stats | jq .total_memories  → number
 [ ] curl -H "Authorization: Bearer $KEY" https://koda.tutorla.tech/admin/memories?limit=1 | jq '{memories_count:(.memories|length),pages}' → {memories_count:1,pages:N}
