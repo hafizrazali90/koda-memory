@@ -33,7 +33,15 @@ if (!fs.existsSync(dbPath)) {
 
 const backupDir = process.env.KODA_BACKUP_DIR || path.join(path.dirname(dbPath), 'backups');
 const keep = Number(process.env.KODA_BACKUP_KEEP || 14);
-fs.mkdirSync(backupDir, { recursive: true });
+fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+fs.chmodSync(backupDir, 0o700);
+
+// The database may contain private operational lessons or historical secrets.
+// Keep the live database, WAL sidecars, and snapshots readable only by the
+// service owner even when the process umask is permissive.
+for (const privatePath of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+  if (fs.existsSync(privatePath)) fs.chmodSync(privatePath, 0o600);
+}
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19); // 2026-06-19T10-30-00
 const dest = path.join(backupDir, `brain-${stamp}.db`);
@@ -45,6 +53,7 @@ async function main() {
 
   // Online backup: page-level copy of a consistent snapshot (WAL included).
   await src.backup(dest);
+  fs.chmodSync(dest, 0o600);
   src.close();
 
   // Verify the backup is complete before trusting it.
