@@ -45,7 +45,9 @@ export function ftsSearch(
   }
 
   // Build WHERE clauses incrementally. JOIN memories only when we need a
-  // column from it (visibility or category filter).
+  // column from it (visibility or category filter). CROSS JOIN keeps the FTS
+  // index as the outer loop: with production statistics SQLite otherwise
+  // walked memories by user_id and re-ran MATCH per row (08/10/2026 outage).
   const conditions: string[] = ['memories_fts MATCH ?'];
   const params: any[] = [ftsQuery];
   let joinMemories = false;
@@ -86,7 +88,7 @@ export function ftsSearch(
       f.tags,
       bm25(memories_fts, 0, 10, 5, 3) as score
     FROM memories_fts f
-    ${joinMemories ? 'JOIN memories m ON m.id = f.id' : ''}
+    ${joinMemories ? 'CROSS JOIN memories m ON m.id = f.id' : ''}
     WHERE ${conditions.join(' AND ')}
     ORDER BY score
     LIMIT ?`;
@@ -100,65 +102,94 @@ export function ftsSearch(
   }
 }
 
-/**
- * Sanitize user query for FTS5 syntax.
- * - Preserves quoted phrases: "exact match"
- * - Preserves prefix wildcards: pay*
- * - Strips stop words for better matching
- * - Joins with AND (default) or OR
- */
-function sanitizeFtsQuery(query: string, operator: 'AND' | 'OR' = 'AND'): string {
-  // If query contains quotes, preserve phrase search
-  if (query.includes('"')) {
-    return query;
+/** Upper bound on generated FTS terms; long memory text must stay cheap. */
+export const MAX_QUERY_TERMS = 24;
+/** Auto-generated prefix terms shorter than this expand to too many tokens. */
+const MIN_AUTO_PREFIX_LENGTH = 4;
+/** A query with quotes is kept verbatim only when it is a short user search. */
+const MAX_VERBATIM_PHRASE_QUERY = 200;
+
+/** FTS5 tokens of a word: letters, digits and underscore runs. */
+function tokensOf(text: string): string[] {
+  return text.split(/[^\p{L}\p{N}_]+/u).filter((t) => t.length > 0);
+}
+
+/** Keeps the first occurrence of each term (case-insensitive), up to the cap. */
+function capUnique(terms: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const term of terms) {
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(term);
+    if (out.length >= MAX_QUERY_TERMS) break;
   }
-
-  const words = query
-    .split(/\s+/)
-    .filter((w) => w.length > 0)
-    .map((word) => {
-      // Preserve prefix wildcards
-      if (word.endsWith('*')) {
-        return word;
-      }
-      // Remove FTS5 special characters from bare words
-      return word.replace(/[{}()\[\]^~:!@#$%&]/g, '');
-    })
-    .filter((w) => w.length > 0)
-    // Strip stop words (unless it's the only word)
-    .filter((w) => !STOP_WORDS.has(w.toLowerCase().replace(/\*$/, '')));
-
-  if (words.length === 0) {
-    // All words were stop words — fall back to original without filtering
-    const fallback = query
-      .split(/\s+/)
-      .filter((w) => w.length > 1)
-      .map((w) => w.replace(/[{}()\[\]^~:!@#$%&]/g, ''))
-      .filter((w) => w.length > 0);
-    return fallback.join(` ${operator} `);
-  }
-
-  return words.join(operator === 'OR' ? ' OR ' : ' ');
+  return out;
 }
 
 /**
- * Fallback search: wrap each word as a prefix match with OR.
+ * Sanitize a query for FTS5 syntax.
+ * - Keeps a short quoted user search verbatim: "exact match"
+ * - Keeps an explicit user prefix: pay*
+ * - Every other word becomes a quoted phrase of its tokens, so punctuation
+ *   (hyphens, slashes, dots, apostrophes) can never break the FTS5 syntax
+ * - Strips stop words, de-duplicates, caps the number of terms
+ * - Joins with AND (default) or OR
+ *
+ * 08/10/2026: memory text with punctuation used to produce invalid syntax,
+ * which fell back to a prefix-per-word query that froze the server.
+ */
+export function sanitizeFtsQuery(query: string, operator: 'AND' | 'OR' = 'AND'): string {
+  if (query.includes('"') && operator === 'AND' && query.length <= MAX_VERBATIM_PHRASE_QUERY) {
+    return query;
+  }
+
+  const build = (dropStopWords: boolean): string[] =>
+    capUnique(
+      query
+        .split(/\s+/)
+        .filter((w) => w.length > 0)
+        .flatMap((word): string[] => {
+          if (word.endsWith('*') && operator === 'AND') {
+            const stem = tokensOf(word.slice(0, -1));
+            return stem.length === 1 && stem[0].length >= 2 ? [`${stem[0]}*`] : [];
+          }
+          const tokens = tokensOf(word).filter(
+            (t) => !dropStopWords || !STOP_WORDS.has(t.toLowerCase())
+          );
+          return tokens.length > 0 ? [`"${tokens.join(' ')}"`] : [];
+        })
+    );
+
+  let terms = build(true);
+  if (terms.length === 0) terms = build(false);
+  return terms.join(operator === 'OR' ? ' OR ' : ' ');
+}
+
+/**
+ * Fallback FTS query: distinct tokens, prefix-matched only when long enough,
+ * capped. Never emits short prefix stubs such as `a*`.
+ */
+export function buildFallbackFtsQuery(query: string): string {
+  return capUnique(
+    tokensOf(query)
+      .filter((t) => t.length >= 3 && !STOP_WORDS.has(t.toLowerCase()))
+      .map((t) => (t.length >= MIN_AUTO_PREFIX_LENGTH ? `${t}*` : `"${t}"`))
+  ).join(' OR ');
+}
+
+/**
+ * Fallback search over buildFallbackFtsQuery (bounded, no short prefix stubs).
  */
 function simpleFtsSearch(db: Database.Database, query: string, limit: number, userId?: string): FtsResult[] {
-  const words = query.split(/\s+/).filter((w) => w.length > 1);
-  if (words.length === 0) return [];
-
-  const ftsQuery = words
-    .filter((w) => !STOP_WORDS.has(w.toLowerCase()))
-    .map((w) => `${w.replace(/[^a-zA-Z0-9]/g, '')}*`)
-    .filter((w) => w.length > 1)
-    .join(' OR ');
+  const ftsQuery = buildFallbackFtsQuery(query);
 
   if (!ftsQuery) return [];
 
   const params: any[] = [ftsQuery];
   const userFilter = userId
-    ? "JOIN memories m ON m.id = f.id WHERE memories_fts MATCH ? AND (m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor') AND m.superseded_at IS NULL"
+    ? "CROSS JOIN memories m ON m.id = f.id WHERE memories_fts MATCH ? AND (m.user_id = ? OR m.user_id = 'shared' OR m.user_id = 'sifututor') AND m.superseded_at IS NULL"
     : 'WHERE memories_fts MATCH ?';
   if (userId) params.push(userId);
   params.push(limit);
